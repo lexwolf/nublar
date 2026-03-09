@@ -1,0 +1,37 @@
+# Compiled binaries
+bin/*
+
+# Object files / build junk
+*.o
+*.out
+*.a
+*.so
+*.dSYM/
+
+# Editor / OS noise
+*~
+.*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary plotting / LaTeX debris
+*.aux
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.toc
+
+# Optional: generated numerical outputs
+# Uncomment if data/output is reproducible and too large/noisy
+# data/output/**
+
+# Optional: generated images
+# Uncomment if img contains only generated artifacts
+# img/**
+
+# Keep directory structure if needed
+!.gitignore
