@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <filesystem>
 #include <nano_geo_matrix/bessel/myBessel.hpp>
+#include <nano_geo_matrix/mie/geometry/single.hpp>
 
 /*
 Compile with:
@@ -16,7 +17,7 @@ g++ -std=c++17 -Wall \
   -I../include \
   -I"$(realpath ../extern/nano_geo_matrix/include)" \
   -I"$(realpath ../extern/nano_geo_matrix/modules/cup)" \
-  -L/usr/local/lib mie.cxx -o ../bin/mie -lcomplex_bessel
+  -L/usr/local/lib mie.cxx -o ../bin/mie -lcomplex_bessel -larmadillo
 */
 
 // ------------------ Mixing Rules ------------------
@@ -143,24 +144,18 @@ void write_distribution(double Rave, const std::string &dist_type,
 
 // ------------------ Mie Coefficient ------------------
 
-std::complex<double> mie_coefficient(int order,
-                                     std::complex<double> eps1,
-                                     std::complex<double> eps2,
-                                     double erre, double lam) {
-    std::complex<double> aj(0.0, 0.0);
-    if (erre == 0) return aj;
+std::complex<double> mie_coefficient_a1(int order,
+                                        std::complex<double> eps1,
+                                        std::complex<double> eps2,
+                                        double erre, double lam) {
+    if (order < 1 || erre == 0.0 || lam == 0.0) {
+        return std::complex<double>(0.0, 0.0);
+    }
 
-    std::complex<double> n1 = sqrt(eps1);
-    std::complex<double> n2 = sqrt(eps2);
-    std::complex<double> m  = n1 / n2;
-
-    std::complex<double> x = 2. * M_PI * erre * n2 / lam;
-    aj = (m * RBj(order, m * x) * RBj_prime(order, x)
-         - RBj(order, x) * RBj_prime(order, m * x))
-       / (m * RBj(order, m * x) * RBh_prime(order, x)
-         - RBh(order, x) * RBj_prime(order, m * x));
-
-    return aj;
+    // The subsystem implementation uses x = 2*pi*n2/lam and does not use rho.
+    // Preserve this file's historical x = 2*pi*erre*n2/lam by rescaling lam.
+    const double scaled_lam = lam / erre;
+    return ::mie_coefficient(order, eps1, eps2, 0.0, erre, scaled_lam).first;
 }
 
 // Integrand for MMGM
@@ -169,7 +164,7 @@ std::complex<double> function(double Rave, std::complex<double> eps1,
                               double lam, const std::string &dist_type,
                               double sigma_ln) {
     double P = distribution(erre, Rave, dist_type, sigma_ln);
-    std::complex<double> a1 = mie_coefficient(1, eps1, eps2, erre, lam);
+    std::complex<double> a1 = mie_coefficient_a1(1, eps1, eps2, erre, lam);
     return P * a1;
 }
 

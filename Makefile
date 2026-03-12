@@ -23,7 +23,7 @@ dirs:
 	mkdir -p $(BIN_DIR)
 
 $(BIN_DIR)/mie: $(SRC_DIR)/mie.cxx extern/nano_geo_matrix/include/nano_geo_matrix/bessel/myBessel.hpp
-	$(CXX) $(CXXFLAGS) -L/usr/local/lib $< -o $@ -lcomplex_bessel $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -L/usr/local/lib $< -o $@ -lcomplex_bessel -larmadillo $(LDFLAGS)
 
 $(BIN_DIR)/getmax: $(SRC_DIR)/getmax.cxx
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
