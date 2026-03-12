@@ -8,7 +8,7 @@ INPUT_FILE="${ROOT_DIR}/data/input/islas.dat"
 OUTPUT_DIR="${ROOT_DIR}/data/output/effe"
 TEMP_OUTPUT="${ROOT_DIR}/data/output/nublar.dat"
 
-g++ -std=c++17 -I"${ROOT_DIR}/include" "${ROOT_DIR}/src/clausius-mossotti.cxx" -lgsl -o "${BIN_CM}"
+g++ -std=c++17 -I"${ROOT_DIR}/include" -I"${ROOT_DIR}/extern/nano_geo_matrix/include" -I"${ROOT_DIR}/extern/nano_geo_matrix/modules/cup" -I/usr/include/eigen3 "${ROOT_DIR}/src/clausius-mossotti.cxx" -lgsl -o "${BIN_CM}"
 rm -f "${OUTPUT_DIR}"/*
 mkdir -p "${OUTPUT_DIR}"
 # effemin=0.577;

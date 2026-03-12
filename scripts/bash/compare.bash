@@ -3,7 +3,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$ROOT_DIR"
-g++ -std=c++17 -Iinclude src/clausius-mossotti.cxx -lgsl -o bin/cm
+g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/clausius-mossotti.cxx -lgsl -o bin/cm
 
 is_number() {
     # Use regular expression to match the number pattern

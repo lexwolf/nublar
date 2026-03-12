@@ -7,7 +7,7 @@
 #include <cmath>
 
 /*
-g++ -std=c++17 -I../include getenz.cxx -o ../bin/getenz
+g++ -std=c++17 -I../include -I../extern/nano_geo_matrix/include getenz.cxx -o ../bin/getenz
 */
 
 // Helper: check if a string is numeric

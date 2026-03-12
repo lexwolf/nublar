@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS ?= -O2 -Wall -std=c++17 -I$(INC_DIR)
+CXXFLAGS ?= -O2 -Wall -std=c++17 -I$(INC_DIR) -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3
 LDFLAGS ?=
 
 BIN_DIR := bin
@@ -18,7 +18,7 @@ all: dirs $(CORE_TARGETS) $(ALIASES)
 dirs:
 	mkdir -p $(BIN_DIR)
 
-$(BIN_DIR)/mie: $(SRC_DIR)/mie.cxx $(INC_DIR)/myBessel.H
+$(BIN_DIR)/mie: $(SRC_DIR)/mie.cxx extern/nano_geo_matrix/include/nano_geo_matrix/bessel/myBessel.hpp
 	$(CXX) $(CXXFLAGS) -L/usr/local/lib $< -o $@ -lcomplex_bessel $(LDFLAGS)
 
 $(BIN_DIR)/getmax: $(SRC_DIR)/getmax.cxx
@@ -27,7 +27,7 @@ $(BIN_DIR)/getmax: $(SRC_DIR)/getmax.cxx
 $(BIN_DIR)/getenz: $(SRC_DIR)/getenz.cxx
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
-$(BIN_DIR)/cm: $(SRC_DIR)/clausius-mossotti.cxx $(INC_DIR)/cup_eV.H
+$(BIN_DIR)/cm: $(SRC_DIR)/clausius-mossotti.cxx extern/nano_geo_matrix/modules/cup/cup.hpp
 	$(CXX) $(CXXFLAGS) $< -o $@ -lgsl $(LDFLAGS)
 
 $(BIN_DIR)/gmax: $(BIN_DIR)/getmax

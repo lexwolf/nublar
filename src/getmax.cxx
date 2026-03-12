@@ -7,7 +7,7 @@
 #include <cctype>
 
 /*
-g++ -std=c++17 -I../include getmax.cxx -o ../bin/getmax
+g++ -std=c++17 -I../include -I../extern/nano_geo_matrix/include getmax.cxx -o ../bin/getmax
 */
 
 // Helper: check if a string is numeric

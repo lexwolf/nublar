@@ -1,0 +1,14 @@
+{
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/include",
+    "${workspaceFolder}/extern/nano_geo_matrix/include",
+    "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
+    "${workspaceFolder}/src",
+    "/usr/include/eigen3"
+  ],
+  "C_Cpp.default.defines": [
+    "CUP_BACKEND_QUASI_STATIC"
+  ],
+  "C_Cpp.default.cppStandard": "c++17",
+  "C_Cpp.default.intelliSenseMode": "linux-gcc-x64"
+}

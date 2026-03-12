@@ -1,0 +1,22 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Linux",
+      "compilerPath": "/usr/bin/g++",
+      "intelliSenseMode": "linux-gcc-x64",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/extern/nano_geo_matrix/include",
+        "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
+        "${workspaceFolder}/src",
+        "/usr/include/eigen3"
+      ],
+      "defines": [
+        "CUP_BACKEND_QUASI_STATIC"
+      ]
+    }
+  ]
+}

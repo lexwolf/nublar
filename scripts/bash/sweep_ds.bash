@@ -91,9 +91,9 @@ done
 # -----------------------
 if $compile; then
     echo "> Compiling codes..."
-    g++ -std=c++17 -Wall -Iinclude -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
-    g++ -std=c++17 -Iinclude src/getmax.cxx -o bin/getmax
-    g++ -std=c++17 -Iinclude src/getenz.cxx -o bin/getenz
+    g++ -std=c++17 -Wall -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
+    g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/getmax.cxx -o bin/getmax
+    g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/getenz.cxx -o bin/getenz
 fi
 
 # -----------------------
