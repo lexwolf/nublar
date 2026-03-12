@@ -11,7 +11,12 @@
 
 /*
 Compile with:
-g++ -std=c++17 -Wall -I../include -I../extern/nano_geo_matrix/include -I../extern/nano_geo_matrix/modules/cup -L/usr/local/lib mie.cxx -o ../bin/mie -lcomplex_bessel
+
+g++ -std=c++17 -Wall \
+  -I../include \
+  -I"$(realpath ../extern/nano_geo_matrix/include)" \
+  -I"$(realpath ../extern/nano_geo_matrix/modules/cup)" \
+  -L/usr/local/lib mie.cxx -o ../bin/mie -lcomplex_bessel
 */
 
 // ------------------ Mixing Rules ------------------

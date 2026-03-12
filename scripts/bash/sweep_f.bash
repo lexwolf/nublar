@@ -3,6 +3,9 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$ROOT_DIR"
+NGM_ROOT="$(realpath "${ROOT_DIR}/extern/nano_geo_matrix")"
+NGM_INC="${NGM_ROOT}/include"
+NGM_CUP="${NGM_ROOT}/modules/cup"
 
 # -----------------------
 # Defaults
@@ -61,9 +64,9 @@ done
 # -----------------------
 if $compile; then
     echo "> Compiling codes..."
-    g++ -std=c++17 -Wall -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
-    g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/getmax.cxx -o bin/getmax
-    g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/getenz.cxx -o bin/getenz
+    g++ -std=c++17 -Wall -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
+    g++ -std=c++17 -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/getmax.cxx -o bin/getmax
+    g++ -std=c++17 -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/getenz.cxx -o bin/getenz
 fi
 
 # -----------------------
@@ -226,9 +229,9 @@ fi
 # -----------------------
 if $compile; then
     echo "> Compiling codes..."
-    g++ -std=c++17 -Wall -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
-    g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/getmax.cxx -o bin/getmax
-    g++ -std=c++17 -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 src/getenz.cxx -o bin/getenz
+    g++ -std=c++17 -Wall -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
+    g++ -std=c++17 -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/getmax.cxx -o bin/getmax
+    g++ -std=c++17 -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/getenz.cxx -o bin/getenz
 fi
 
 # -----------------------

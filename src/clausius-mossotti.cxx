@@ -7,10 +7,17 @@
 #define CUP_BACKEND_QUASI_STATIC
 #include <nano_geo_matrix/core/mathNN.hpp>
 #include <nano_geo_matrix/quasi_static/geometry/single.hpp>
-#include "cup.hpp"
+#include <cup.hpp>
 
 /*
-g++ -std=c++17 -I../include -I../extern/nano_geo_matrix/include -I../extern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 clausius-mossotti.cxx -lgsl -o ../bin/cm
+Example compilation:
+
+g++ -std=c++17 \
+  -I../include \
+  -I"$(realpath ../extern/nano_geo_matrix/include)" \
+  -I"$(realpath ../extern/nano_geo_matrix/modules/cup)" \
+  -I/usr/include/eigen3 \
+  clausius-mossotti.cxx -lgsl -o ../bin/cm
 */
 
 std::pair<double, double> getmax (std::vector<std::pair<double, double>> Data){

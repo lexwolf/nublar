@@ -3,6 +3,9 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$ROOT_DIR"
+NGM_ROOT="$(realpath "${ROOT_DIR}/extern/nano_geo_matrix")"
+NGM_INC="${NGM_ROOT}/include"
+NGM_CUP="${NGM_ROOT}/modules/cup"
 
 # Function to show usage
 show_usage() {
@@ -37,7 +40,7 @@ Rave=$1
 
 # Compile the code if -c flag is given
 if [ "$compile" = true ]; then
-    g++ -std=c++17 -Wall -Iinclude -Iextern/nano_geo_matrix/include -Iextern/nano_geo_matrix/modules/cup -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
+    g++ -std=c++17 -Wall -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel
 fi
 
 # Loop from 0.1 to 0.3 in increments of 0.1
