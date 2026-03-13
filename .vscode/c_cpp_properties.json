@@ -7,15 +7,25 @@
       "intelliSenseMode": "linux-gcc-x64",
       "cStandard": "c17",
       "cppStandard": "c++17",
+      "forcedInclude": [
+        "${workspaceFolder}/.vscode/cup_intellisense.hpp"
+      ],
       "includePath": [
+        "${workspaceFolder}/include",
         "${workspaceFolder}/extern/nano_geo_matrix/include",
         "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
         "${workspaceFolder}/src",
         "/usr/include/eigen3"
       ],
-      "defines": [
-        "CUP_BACKEND_QUASI_STATIC"
-      ]
+      "browse": {
+        "path": [
+          "${workspaceFolder}/include",
+          "${workspaceFolder}/src",
+          "${workspaceFolder}/extern/nano_geo_matrix/include",
+          "${workspaceFolder}/extern/nano_geo_matrix/modules/cup"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
     }
   ]
 }
