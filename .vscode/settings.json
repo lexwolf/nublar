@@ -10,5 +10,6 @@
     "CUP_BACKEND_QUASI_STATIC"
   ],
   "C_Cpp.default.cppStandard": "c++17",
-  "C_Cpp.default.intelliSenseMode": "linux-gcc-x64"
+  "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+  "cmake.sourceDirectory": "/home/alessandro/GitHub/Academia/nublar/extern/nano_geo_matrix"
 }
