@@ -2,30 +2,70 @@
   "version": 4,
   "configurations": [
     {
-      "name": "Linux",
+      "name": "Linux-CUP-QuasiStatic",
       "compilerPath": "/usr/bin/g++",
       "intelliSenseMode": "linux-gcc-x64",
       "cStandard": "c17",
-      "cppStandard": "c++17",
+      "cppStandard": "gnu++17",
       "forcedInclude": [
-        "${workspaceFolder}/.vscode/cup_intellisense.hpp"
+        "${workspaceFolder}/.vscode/cup_intellisense_qs.hpp"
       ],
       "includePath": [
         "${workspaceFolder}/include",
         "${workspaceFolder}/extern/nano_geo_matrix/include",
+        "${workspaceFolder}/extern/nano_geo_matrix/modules",
         "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
         "${workspaceFolder}/src",
+        "${default}",
         "/usr/include/eigen3"
       ],
       "browse": {
         "path": [
           "${workspaceFolder}/include",
           "${workspaceFolder}/src",
+          "${workspaceFolder}/extern/nano_geo_matrix/modules",
           "${workspaceFolder}/extern/nano_geo_matrix/include",
-          "${workspaceFolder}/extern/nano_geo_matrix/modules/cup"
+          "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
+          "${workspaceFolder}"
         ],
         "limitSymbolsToIncludedHeaders": true
-      }
+      },
+      "compilerArgs": [
+        "-DUSE_MYBESSEL"
+      ]
+    },
+    {
+      "name": "Linux-CUP-MIE",
+      "compilerPath": "/usr/bin/g++",
+      "intelliSenseMode": "linux-gcc-x64",
+      "cStandard": "c17",
+      "cppStandard": "gnu++17",
+      "forcedInclude": [
+        "${workspaceFolder}/.vscode/cup_intellisense_mie.hpp"
+      ],
+      "includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/extern/nano_geo_matrix/include",
+        "${workspaceFolder}/extern/nano_geo_matrix/modules",
+        "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
+        "${workspaceFolder}/src",
+        "${default}",
+        "/usr/include/eigen3"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}/include",
+          "${workspaceFolder}/src",
+          "${workspaceFolder}/extern/nano_geo_matrix/modules",
+          "${workspaceFolder}/extern/nano_geo_matrix/include",
+          "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
+          "${workspaceFolder}"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      },
+      "compilerArgs": [
+        "-DUSE_MYBESSEL"
+      ]
     }
   ]
 }

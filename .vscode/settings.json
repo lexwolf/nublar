@@ -2,21 +2,22 @@
   "C_Cpp.default.includePath": [
     "${workspaceFolder}/include",
     "${workspaceFolder}/extern/nano_geo_matrix/include",
+    "${workspaceFolder}/extern/nano_geo_matrix/modules",
     "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
     "${workspaceFolder}/src",
+    "${default}",
     "/usr/include/eigen3"
-  ],
-  "C_Cpp.default.forcedInclude": [
-    "${workspaceFolder}/.vscode/cup_intellisense.hpp"
   ],
   "C_Cpp.default.browse.path": [
     "${workspaceFolder}/include",
     "${workspaceFolder}/src",
+    "${workspaceFolder}/extern/nano_geo_matrix/modules",
     "${workspaceFolder}/extern/nano_geo_matrix/include",
-    "${workspaceFolder}/extern/nano_geo_matrix/modules/cup"
+    "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
+    "${workspaceFolder}"
   ],
   "C_Cpp.default.browse.limitSymbolsToIncludedHeaders": true,
-  "C_Cpp.default.cppStandard": "c++17",
+  "C_Cpp.default.cppStandard": "gnu++17",
   "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
   "cmake.sourceDirectory": "/home/alessandro/GitHub/Academia/nublar/extern/nano_geo_matrix"
 }
