@@ -11,12 +11,14 @@
 #include <nano_geo_matrix/mie/geometry/single.hpp>
 
 /*
-Compile with:
+Example compilation:
+
+NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
 
 g++ -std=c++17 -Wall \
   -I../include \
-  -I"$(realpath ../extern/nano_geo_matrix/include)" \
-  -I"$(realpath ../extern/nano_geo_matrix/modules/cup)" \
+  -I"$NGM_ROOT/include" \
+  -I"$NGM_ROOT/modules/cup" \
   -L/usr/local/lib mie.cxx -o ../bin/mie -lcomplex_bessel -larmadillo
 */
 

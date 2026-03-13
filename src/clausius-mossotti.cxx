@@ -12,10 +12,12 @@
 /*
 Example compilation:
 
+NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
+
 g++ -std=c++17 \
   -I../include \
-  -I"$(realpath ../extern/nano_geo_matrix/include)" \
-  -I"$(realpath ../extern/nano_geo_matrix/modules/cup)" \
+  -I"$NGM_ROOT/include" \
+  -I"$NGM_ROOT/modules/cup" \
   -I/usr/include/eigen3 \
   clausius-mossotti.cxx -lgsl -o ../bin/cm
 */

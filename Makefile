@@ -1,16 +1,18 @@
 CXX ?= g++
 LDFLAGS ?=
+CXXFLAGS ?= -O2 -Wall -std=c++17
+
+# Absolute path to nano_geo_matrix subsystem
+NGM_ROOT := $(realpath extern/nano_geo_matrix)
+NGM_INC := $(NGM_ROOT)/include
+NGM_CUP := $(NGM_ROOT)/modules/cup
 
 BIN_DIR := bin
 SRC_DIR := src
 INC_DIR := include
 DATA_DIR := data
 SCRIPT_DIR := scripts
-NGM_ROOT := $(realpath extern/nano_geo_matrix)
-NGM_INC := $(NGM_ROOT)/include
-NGM_CUP := $(NGM_ROOT)/modules/cup
-
-CXXFLAGS ?= -O2 -Wall -std=c++17 -I$(INC_DIR) -I$(NGM_INC) -I$(NGM_CUP) -I/usr/include/eigen3
+CXXFLAGS += -I$(INC_DIR) -I$(NGM_INC) -I$(NGM_CUP) -I/usr/include/eigen3
 
 CORE_TARGETS := $(BIN_DIR)/mie $(BIN_DIR)/getmax $(BIN_DIR)/getenz $(BIN_DIR)/cm
 ALIASES := $(BIN_DIR)/gmax $(BIN_DIR)/genz
