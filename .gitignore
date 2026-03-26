@@ -39,8 +39,6 @@ data/output/**/*.dat
 
 # Build directories
 build/
-
-# CMake API / testing noise
 build/.cmake/
 build/Testing/
 
