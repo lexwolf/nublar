@@ -1,0 +1,90 @@
+{
+  "path": "data/experimental/raw/afm/Nis_Ag_10s_2um_001.stp",
+  "header_size_bytes": 870,
+  "byte_order": "little",
+  "metadata": {
+    "root": {
+      "Image header size": 870.0
+    },
+    "Control": {
+      "Set Point": {
+        "value": 0.0,
+        "unit": "nA"
+      },
+      "X Amplitude": {
+        "value": 2.0,
+        "unit": "\u00b5m"
+      },
+      "Y Amplitude": {
+        "value": 2.0,
+        "unit": "\u00b5m"
+      },
+      "Z Gain": 1.0
+    },
+    "General Info": {
+      "Acquisition channel": "Height",
+      "Acquisition primary channel": "Height",
+      "Acquisition time": "12/02/2026, 12:12:45.386",
+      "Head type": "AFM",
+      "Image Data Type": "double",
+      "Image processes": "converted",
+      "Number of columns": 256.0,
+      "Number of rows": 256.0,
+      "X scanning direction": "Forward",
+      "Z Amplitude": {
+        "value": 39.8993,
+        "unit": "nm"
+      }
+    },
+    "Head Settings": {
+      "X Calibration": {
+        "value": 100.0,
+        "unit": "nm/V"
+      }
+    },
+    "Miscellaneous": {
+      "Comments": "Converted from di files",
+      "Maximum": 24.7601,
+      "Minimum": -15.1393,
+      "Relative Z value": true,
+      "Saved with version": {
+        "value": 5.0,
+        "unit": "Develop 11.2"
+      },
+      "Version": {
+        "value": 1.0,
+        "unit": "(April 2000)"
+      },
+      "Z Scale Factor": 1.0,
+      "Z Scale Offset": 0.0
+    },
+    "Nanoscope settings": {
+      "Tip potential": {
+        "value": 0.0,
+        "unit": "mV"
+      }
+    },
+    "Header end": {}
+  },
+  "shape": {
+    "rows": 256,
+    "cols": 256
+  },
+  "scan": {
+    "x_size": 2.0,
+    "x_unit": "\u00b5m",
+    "y_size": 2.0,
+    "y_unit": "\u00b5m",
+    "z_unit": "nm",
+    "dx": 0.0078125,
+    "dy": 0.0078125,
+    "dx_nm": 7.8125,
+    "dy_nm": 7.8125
+  },
+  "summary": {
+    "z_min": -15.139261702949693,
+    "z_max": 24.760079272301102,
+    "z_mean": -0.05269408678759324,
+    "z_std": 4.900625425739469
+  }
+}
