@@ -7,7 +7,15 @@
 #include <cctype>
 
 /*
-g++ -std=c++17 -I../include getmax.cxx -o ../bin/getmax
+Example compilation:
+
+NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
+
+g++ -std=c++17 \
+  -I../include \
+  -I"$NGM_ROOT/include" \
+  -I"$NGM_ROOT/modules/cup" \
+  getmax.cxx -o ../bin/getmax
 */
 
 // Helper: check if a string is numeric

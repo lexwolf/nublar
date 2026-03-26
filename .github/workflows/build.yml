@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libeigen3-dev \
+            libgsl-dev \
+            libboost-all-dev \
+            libarmadillo-dev
+
+      - name: Install complex_bessel
+        run: |
+          git clone --depth 1 https://github.com/joeydumont/complex_bessel.git /tmp/complex_bessel
+          cmake -S /tmp/complex_bessel -B /tmp/complex_bessel/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/complex_bessel/build -j
+          sudo cmake --install /tmp/complex_bessel/build
+          sudo ldconfig
+
+      - name: Build project
+        run: make -B

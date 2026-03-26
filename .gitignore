@@ -28,6 +28,7 @@ Thumbs.db
 # Optional: generated numerical outputs
 # Uncomment if data/output is reproducible and too large/noisy
 # data/output/**
+data/output/**/*.dat
 
 # Optional: generated images
 # Uncomment if img contains only generated artifacts
@@ -35,3 +36,13 @@ Thumbs.db
 
 # Keep directory structure if needed
 !.gitignore
+
+# Build directories
+build/
+
+# CMake API / testing noise
+build/.cmake/
+build/Testing/
+
+# Generated numerical outputs
+data/output/

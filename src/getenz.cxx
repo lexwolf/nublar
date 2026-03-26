@@ -7,7 +7,15 @@
 #include <cmath>
 
 /*
-g++ -std=c++17 -I../include getenz.cxx -o ../bin/getenz
+Example compilation:
+
+NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
+
+g++ -std=c++17 \
+  -I../include \
+  -I"$NGM_ROOT/include" \
+  -I"$NGM_ROOT/modules/cup" \
+  getenz.cxx -o ../bin/getenz
 */
 
 // Helper: check if a string is numeric
