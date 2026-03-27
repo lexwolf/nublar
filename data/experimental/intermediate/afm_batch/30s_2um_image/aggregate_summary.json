@@ -1,0 +1,44 @@
+{
+  "files": [
+    {
+      "path": "data/experimental/raw/afm/Nis_Ag_30s_2um Image 1.stp",
+      "rows": 256,
+      "cols": 256,
+      "x_size_um": 2.0,
+      "y_size_um": 2.0,
+      "dx_nm": 7.8125,
+      "dy_nm": 7.8125,
+      "z_min_nm": -5.972784852259064,
+      "z_max_nm": 14.85673682922637,
+      "z_mean_nm": -5.524755457807229e-16,
+      "z_std_nm": 2.1812602443277704,
+      "percentile_p01_nm": -4.1665392944233,
+      "percentile_p50_nm": -0.2681901698899827,
+      "percentile_p99_nm": 6.565683015462371,
+      "baseline_nm": -1.4203931664548448,
+      "threshold_nm": 1.6044731413302673,
+      "threshold_sigma": 0.6417892565321069,
+      "coverage_fraction": 0.332183837890625,
+      "island_count": 232,
+      "number_density_per_um2": 58.0,
+      "equivalent_thickness_nm": 1.0329133959998154,
+      "mean_island_height_nm": 2.9248550386123715,
+      "mean_equivalent_radius_nm": 38.70585138910961,
+      "std_equivalent_radius_nm": 18.025417680951968,
+      "mean_volume_nm3": 17808.85165516923
+    }
+  ],
+  "aggregate": {
+    "n_files": 1,
+    "coverage_fraction_mean": 0.332183837890625,
+    "coverage_fraction_std": 0.0,
+    "equivalent_thickness_nm_mean": 1.0329133959998154,
+    "equivalent_thickness_nm_std": 0.0,
+    "mean_equivalent_radius_nm_mean": 38.70585138910961,
+    "mean_equivalent_radius_nm_std": 0.0,
+    "number_density_per_um2_mean": 58.0,
+    "number_density_per_um2_std": 0.0,
+    "island_count_mean": 232.0,
+    "island_count_std": 0.0
+  }
+}
