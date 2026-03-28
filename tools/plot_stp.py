@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from read_stp import load_stp
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+
+from afm_lib.plot_utils import plot_height_map
+from afm_lib.stp_io import load_stp
 
 
 def main() -> int:
@@ -33,28 +39,19 @@ def main() -> int:
 
         scan = stp["scan"]
 
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-        im = ax.imshow(
+        fig, ax = plot_height_map(
             z,
-            cmap="viridis",
-            origin="lower",
-            extent=[0, scan["x_size"], 0, scan["y_size"]],
-            aspect="equal",
+            x_size=scan["x_size"],
+            y_size=scan["y_size"],
+            x_unit=scan["x_unit"],
+            y_unit=scan["y_unit"],
+            z_unit=scan["z_unit"],
+            title=Path(stp["path"]).name,
         )
-
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label(f"Height ({scan['z_unit']})")
-
-        ax.set_xlabel(f"X ({scan['x_unit']})")
-        ax.set_ylabel(f"Y ({scan['y_unit']})")
-        ax.set_title(Path(stp["path"]).name)
-
-        plt.tight_layout()
 
         if args.save:
             args.save.parent.mkdir(parents=True, exist_ok=True)
-            plt.savefig(args.save, dpi=300)
+            fig.savefig(args.save, dpi=300)
 
         if args.show_hist:
             fig2, ax2 = plt.subplots()

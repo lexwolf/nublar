@@ -177,18 +177,18 @@ std::complex<double> trapezoidalIntegration(double Rave,
                                             double lam,
                                             const std::string &dist_type,
                                             double sigma_ln) {
-    double h = 0.05 * Rave;
+    double hh = 0.05 * Rave;
     double Rmax = 10. * Rave;
-    int n = static_cast<int>(Rmax / h);
+    int n = static_cast<int>(Rmax / hh);
     std::complex<double> integral = 0.0;
 
     integral += function(Rave, eps1, eps2, 0, lam, dist_type, sigma_ln) / 2.0;
     integral += function(Rave, eps1, eps2, Rmax, lam, dist_type, sigma_ln) / 2.0;
     for (int i = 1; i < n; ++i) {
-        double erre = i * h;
+        double erre = i * hh;
         integral += function(Rave, eps1, eps2, erre, lam, dist_type, sigma_ln);
     }
-    integral *= h;
+    integral *= hh;
     return integral;
 }
 

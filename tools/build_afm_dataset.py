@@ -2,20 +2,23 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import re
+import sys
 from pathlib import Path
-from statistics import mean, pstdev
 from typing import Any
 
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
 
-TIME_RE = re.compile(r"Nis_Ag_(\d+)s_.*_features\.json$")
-SUFFIX_RE = re.compile(r"_(001|002|003|Image_1|Image_1\.txtNis_Ag_\d+s_2um_Image_1)$")
-
-
-class DatasetBuildError(RuntimeError):
-    pass
+from afm_lib.dataset import (
+    gather_json_files,
+    group_summaries_by_time,
+    mean_std,
+    normalize_suffix,
+    write_csv,
+    write_dat_lines,
+    write_gnuplot_script,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,66 +50,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def normalize_suffix(token: str) -> str:
-    t = token.strip().lower()
-    if t in {"image", "img", "image1", "image_1"}:
-        return "image"
-    if t in {"001", "002", "003"}:
-        return t
-    raise DatasetBuildError(f"Unsupported suffix token: {token}")
-
-
-def extract_time_s(path: Path) -> int:
-    m = TIME_RE.search(path.name)
-    if not m:
-        raise DatasetBuildError(f"Could not parse deposition time from filename: {path}")
-    return int(m.group(1))
-
-
-def extract_source_label(path: Path) -> str:
-    name = path.name
-    if "Image_1" in name:
-        return "image"
-    for s in ("001", "002", "003"):
-        if f"_{s}_" in name or name.endswith(f"_{s}_features.json"):
-            return s
-    raise DatasetBuildError(f"Could not parse source label from filename: {path}")
-
-
-DEFAULT_BATCH_ROOT = Path("data/experimental/intermediate/afm_batch")
-
-
-def gather_json_files(inputs: list[Path]) -> list[Path]:
-    if not inputs:
-        if not DEFAULT_BATCH_ROOT.exists():
-            raise DatasetBuildError(
-                "No inputs provided and default batch directory does not exist: "
-                f"{DEFAULT_BATCH_ROOT}"
-            )
-        return sorted(DEFAULT_BATCH_ROOT.rglob("*_features.json"))
-
-    files: list[Path] = []
-    for p in inputs:
-        if p.is_dir():
-            files.extend(sorted(p.rglob("*_features.json")))
-        elif p.is_file():
-            files.append(p)
-        else:
-            raise DatasetBuildError(f"Input path does not exist: {p}")
-
-    if not files:
-        raise DatasetBuildError("No feature JSON files found in the provided inputs")
-    return sorted(files)
-
-
-def load_summary(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
-    if "summary" not in payload:
-        raise DatasetBuildError(f"Missing 'summary' section in: {path}")
-    return payload["summary"]
-
-
 FIELDS = [
     "coverage_fraction",
     "equivalent_thickness_nm",
@@ -118,38 +61,14 @@ FIELDS = [
 ]
 
 
-def group_by_time(files: list[Path], allowed_sources: set[str]) -> dict[int, list[dict[str, Any]]]:
-    grouped: dict[int, list[dict[str, Any]]] = {}
-    for path in files:
-        source = extract_source_label(path)
-        if source not in allowed_sources:
-            continue
-        time_s = extract_time_s(path)
-        summary = load_summary(path)
-        summary = dict(summary)
-        summary["_source"] = source
-        summary["_path"] = str(path)
-        grouped.setdefault(time_s, []).append(summary)
-
-    if not grouped:
-        raise DatasetBuildError("No JSON summaries matched the requested suffix selection")
-    return grouped
-
-
-def mean_std(values: list[float]) -> tuple[float, float]:
-    if not values:
-        return 0.0, 0.0
-    if len(values) == 1:
-        return float(values[0]), 0.0
-    return float(mean(values)), float(pstdev(values))
-
 def derived_reff_nm(coverage_fraction: float, number_density_per_um2: float) -> float:
     if number_density_per_um2 <= 0:
         return 0.0
     # sqrt(coverage / (pi * density)) gives a length in um
     return 1000.0 * ((coverage_fraction / (3.141592653589793 * number_density_per_um2)) ** 0.5)
 
-def build_rows(grouped: dict[int, list[dict[str, Any]]], source_label: str) -> list[dict[str, Any]]:
+
+def build_rows(grouped: dict[int, list[dict[str, float | str]]]) -> list[dict[str, float | int | str]]:
     rows: list[dict[str, Any]] = []
     for time_s in sorted(grouped):
         entries = grouped[time_s]
@@ -163,52 +82,44 @@ def build_rows(grouped: dict[int, list[dict[str, Any]]], source_label: str) -> l
             mu, sigma = mean_std(vals)
             row[field] = mu
             row[f"{field}_std"] = sigma
-            reff_vals = [
-                derived_reff_nm(
-                    float(e["coverage_fraction"]),
-                    float(e["number_density_per_um2"]),
-                )
-                for e in entries
-            ]
-            reff_mu, reff_sigma = mean_std(reff_vals)
-            row["derived_reff_nm"] = reff_mu
-            row["derived_reff_nm_std"] = reff_sigma
+        reff_vals = [
+            derived_reff_nm(
+                float(e["coverage_fraction"]),
+                float(e["number_density_per_um2"]),
+            )
+            for e in entries
+        ]
+        reff_mu, reff_sigma = mean_std(reff_vals)
+        row["derived_reff_nm"] = reff_mu
+        row["derived_reff_nm_std"] = reff_sigma
         rows.append(row)
     return rows
 
 
-def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "time_s",
-        "n_scans",
-        "sources",
-        "coverage_fraction",
-        "coverage_fraction_std",
-        "equivalent_thickness_nm",
-        "equivalent_thickness_nm_std",
-        "mean_equivalent_radius_nm",
-        "mean_equivalent_radius_nm_std",
-        "std_equivalent_radius_nm",
-        "std_equivalent_radius_nm_std",
-        "number_density_per_um2",
-        "number_density_per_um2_std",
-        "derived_reff_nm",
-        "derived_reff_nm_std",
-        "island_count",
-        "island_count_std",
-        "mean_island_height_nm",
-        "mean_island_height_nm_std",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+CSV_FIELDNAMES = [
+    "time_s",
+    "n_scans",
+    "sources",
+    "coverage_fraction",
+    "coverage_fraction_std",
+    "equivalent_thickness_nm",
+    "equivalent_thickness_nm_std",
+    "mean_equivalent_radius_nm",
+    "mean_equivalent_radius_nm_std",
+    "std_equivalent_radius_nm",
+    "std_equivalent_radius_nm_std",
+    "number_density_per_um2",
+    "number_density_per_um2_std",
+    "derived_reff_nm",
+    "derived_reff_nm_std",
+    "island_count",
+    "island_count_std",
+    "mean_island_height_nm",
+    "mean_island_height_nm_std",
+]
 
 
 def write_dat(rows: list[dict[str, Any]], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     header = (
         "# time_s n_scans "
         "coverage coverage_std thickness_nm thickness_std "
@@ -216,19 +127,20 @@ def write_dat(rows: list[dict[str, Any]], path: Path) -> None:
         "density_um2 density_um2_std derived_reff_nm derived_reff_nm_std island_count island_count_std "
         "mean_height_nm mean_height_std\n"
     )
-    with path.open("w", encoding="utf-8") as f:
-        f.write(header)
-        for r in rows:
-            f.write(
-                "{time_s} {n_scans} {coverage_fraction:.10g} {coverage_fraction_std:.10g} "
-                "{equivalent_thickness_nm:.10g} {equivalent_thickness_nm_std:.10g} "
-                "{mean_equivalent_radius_nm:.10g} {mean_equivalent_radius_nm_std:.10g} "
-                "{std_equivalent_radius_nm:.10g} {std_equivalent_radius_nm_std:.10g} "
-                "{number_density_per_um2:.10g} {number_density_per_um2_std:.10g} "
-                "{derived_reff_nm:.10g} {derived_reff_nm_std:.10g} "
-                "{island_count:.10g} {island_count_std:.10g} "
-                "{mean_island_height_nm:.10g} {mean_island_height_nm_std:.10g}\n".format(**r)
-            )
+    lines = [
+        (
+            "{time_s} {n_scans} {coverage_fraction:.10g} {coverage_fraction_std:.10g} "
+            "{equivalent_thickness_nm:.10g} {equivalent_thickness_nm_std:.10g} "
+            "{mean_equivalent_radius_nm:.10g} {mean_equivalent_radius_nm_std:.10g} "
+            "{std_equivalent_radius_nm:.10g} {std_equivalent_radius_nm_std:.10g} "
+            "{number_density_per_um2:.10g} {number_density_per_um2_std:.10g} "
+            "{derived_reff_nm:.10g} {derived_reff_nm_std:.10g} "
+            "{island_count:.10g} {island_count_std:.10g} "
+            "{mean_island_height_nm:.10g} {mean_island_height_nm_std:.10g}\n"
+        ).format(**row)
+        for row in rows
+    ]
+    write_dat_lines(path, header, lines)
 
 
 GNUPLOT_TEMPLATE = r'''set terminal pngcairo size 1400,900
@@ -270,24 +182,14 @@ unset multiplot
 '''
 
 
-def write_gnuplot_script(path: Path, dat_path: Path, png_name: str, label: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    script = GNUPLOT_TEMPLATE.format(
-        dat_name=dat_path.name,
-        png_name=png_name,
-        label=label,
-    )
-    path.write_text(script, encoding="utf-8")
-
-
 def main() -> int:
     args = parse_args()
     suffixes = {normalize_suffix(s) for s in args.include_suffixes.split(",")}
 
     files = gather_json_files(args.inputs)
-    grouped = group_by_time(files, suffixes)
+    grouped = group_summaries_by_time(files, suffixes)
     label = "+".join(sorted(suffixes))
-    rows = build_rows(grouped, label)
+    rows = build_rows(grouped)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     csv_path = args.outdir / f"{args.basename}_{label}.csv"
@@ -295,9 +197,9 @@ def main() -> int:
     gp_path = args.outdir / f"plot_{args.basename}_{label}.gp"
     png_name = f"{args.basename}_{label}.png"
 
-    write_csv(rows, csv_path)
+    write_csv(rows, csv_path, CSV_FIELDNAMES)
     write_dat(rows, dat_path)
-    write_gnuplot_script(gp_path, dat_path, png_name, label)
+    write_gnuplot_script(gp_path, GNUPLOT_TEMPLATE, dat_path, png_name, label)
 
     print(f"Wrote: {csv_path}")
     print(f"Wrote: {dat_path}")
