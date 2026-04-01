@@ -29,6 +29,8 @@ f_zero=0.133
 
 summary="data/output/summary_ds.dat"
 mapping="data/output/mapping_ds.dat"
+imgdir="img/output/sweep_ds"
+plotdir="scripts/gnuplot/output/sweep_ds"
 
 # --- Verbose subroutine logging ---
 verbose_output=false
@@ -151,7 +153,7 @@ if $verbose_output; then
     rm -f "$subroutine_logdir"/*.dat
 fi
 
-mkdir -p data/output img
+mkdir -p data/output "$imgdir" "$plotdir"
 echo "# ds d[nm] Rave[nm] sigma_geo sigma_nm[nm] f lam_max[nm] ENZ1[nm] ENZ2[nm]" > "$summary"
 echo "# file ds d[nm] Rave[nm] sigma_geo sigma_nm[nm] f" > "$mapping"
 
@@ -270,14 +272,12 @@ done
 # -----------------------
 # Plot image (single png)
 # -----------------------
-imgdir="img"
-mkdir -p "$imgdir"
 pngfile="${imgdir}/deposition.png"
 if $zero_flag; then
     pngfile="${imgdir}/deposition_MG.png"
 fi
 
-plotfile="scripts/gnuplot/plot_results_ds.gp"
+plotfile="${plotdir}/plot_results_ds.gp"
 
 {
 cat <<EOF
@@ -335,8 +335,10 @@ if command -v gnuplot &> /dev/null; then
     echo "> Generating plot with gnuplot..."
     gnuplot "$plotfile"
     echo "  -> Plot saved as $pngfile"
+    echo "  -> Gnuplot script saved as $plotfile"
 else
     echo "!! gnuplot not found, skipping plotting step."
+    echo "   Generated gnuplot script: $plotfile"
 fi
 
 caption_file="data/output/caption.tex"

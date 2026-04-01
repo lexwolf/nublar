@@ -12,6 +12,8 @@ if str(THIS_DIR) not in sys.path:
 
 from afm_lib.dataset import (
     gather_json_files,
+    gnuplot_dir_for_data_dir,
+    image_dir_for_data_dir,
     group_summaries_by_time,
     mean_std,
     normalize_suffix,
@@ -40,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         "--outdir",
         type=Path,
         default=Path("data/experimental/final"),
-        help="Output directory for CSV, DAT, and gnuplot script.",
+        help="Data output directory for CSV and DAT files (default: data/experimental/final).",
     )
     parser.add_argument(
         "--basename",
@@ -192,20 +194,23 @@ def main() -> int:
     rows = build_rows(grouped)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
+    img_dir = image_dir_for_data_dir(args.outdir)
+    gp_dir = gnuplot_dir_for_data_dir(args.outdir)
     csv_path = args.outdir / f"{args.basename}_{label}.csv"
     dat_path = args.outdir / f"{args.basename}_{label}.dat"
-    gp_path = args.outdir / f"plot_{args.basename}_{label}.gp"
-    png_name = f"{args.basename}_{label}.png"
+    gp_path = gp_dir / f"plot_{args.basename}_{label}.gp"
+    png_path = img_dir / f"{args.basename}_{label}.png"
 
     write_csv(rows, csv_path, CSV_FIELDNAMES)
     write_dat(rows, dat_path)
-    write_gnuplot_script(gp_path, GNUPLOT_TEMPLATE, dat_path, png_name, label)
+    write_gnuplot_script(gp_path, GNUPLOT_TEMPLATE, dat_path, png_path.as_posix(), label)
 
     print(f"Wrote: {csv_path}")
     print(f"Wrote: {dat_path}")
+    print(f"Wrote: {png_path} (via gnuplot)")
     print(f"Wrote: {gp_path}")
     print("\nSuggested gnuplot run:")
-    print(f"  cd {args.outdir} && gnuplot {gp_path.name}")
+    print(f"  gnuplot {gp_path}")
 
     return 0
 

@@ -4,7 +4,7 @@ set term pdf color enhanced size 15cm,8cm;
 sz=1.
 set size sz
 
-set output "img/10-30_Rave=30.pdf"
+set output "img/output/10-30/10-30_Rave=30.pdf"
 
 set label 1 at screen 0.45, screen 0.95 "R_{ave} = 30 nm"
 set multiplot layout 1, 2

@@ -1,5 +1,5 @@
 set terminal pngcairo size 1400,900
-set output "afm_dataset_001.png"
+set output "img/experimental/final/afm_dataset_001.png"
 
 set multiplot layout 2,2 rowsfirst title "AFM morphology vs deposition time (001)"
 
@@ -20,15 +20,15 @@ set xlabel "Deposition time (s)"
 # 12 density_um2_std
 
 set ylabel "Coverage fraction"
-plot "afm_dataset_001.dat" using 1:3:4 title "coverage"
+plot "data/experimental/final/afm_dataset_001.dat" using 1:3:4 title "coverage"
 
 set ylabel "Equivalent thickness (nm)"
-plot "afm_dataset_001.dat" using 1:5:6 title "thickness"
+plot "data/experimental/final/afm_dataset_001.dat" using 1:5:6 title "thickness"
 
 set ylabel "Mean equivalent radius (nm)"
-plot "afm_dataset_001.dat" using 1:7:8 title "mean radius"
+plot "data/experimental/final/afm_dataset_001.dat" using 1:7:8 title "mean radius"
 
 set ylabel "Number density (1/um^2)"
-plot "afm_dataset_001.dat" using 1:11:12 title "density"
+plot "data/experimental/final/afm_dataset_001.dat" using 1:11:12 title "density"
 
 unset multiplot

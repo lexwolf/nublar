@@ -1,5 +1,5 @@
 set terminal pngcairo size 1400,900
-set output "afm_to_emt_input_001+003.png"
+set output "img/experimental/final/afm_to_emt_input_001+003.png"
 
 set multiplot layout 2,2 rowsfirst title "AFM -> EMT inputs (001+003)"
 
@@ -25,15 +25,15 @@ set xlabel "Deposition time (s)"
 # 14 mean_height_nm_std
 
 set ylabel "Coverage fraction"
-plot "afm_to_emt_input_001+003.dat" using 1:3:4 title "coverage"
+plot "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:3:4 title "coverage"
 
 set ylabel "Rave (nm)"
-plot "afm_to_emt_input_001+003.dat" using 1:5:6 title "Rave"
+plot "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:5:6 title "Rave"
 
 set ylabel "sigma_geo"
-plot "afm_to_emt_input_001+003.dat" using 1:7:8 title "sigma_geo"
+plot "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:7:8 title "sigma_geo"
 
 set ylabel "Equivalent thickness (nm)"
-plot "afm_to_emt_input_001+003.dat" using 1:9:10 title "eq thickness"
+plot "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:9:10 title "eq thickness"
 
 unset multiplot

@@ -1,7 +1,7 @@
 reset
 
 set terminal pngcairo size 1200,800 enhanced font "Helvetica,14"
-set output "check_NR2_vs_coverage.png"
+set output "img/experimental/final/check_NR2_vs_coverage.png"
 
 set multiplot layout 2,1 title "Consistency check: coverage vs N R^2"
 
@@ -28,12 +28,12 @@ set xlabel "Deposition time (s)"
 # --- Panel 1: raw comparison ---
 set ylabel "Coverage / proxy"
 plot \
-    "afm_to_emt_input_001+003.dat" using 1:3:4 with yerrorlines lw 2 pt 7 title "coverage", \
-    "afm_to_emt_input_001+003.dat" using 1:($11*($5/1000.0)**2*pi) with linespoints lw 2 pt 5 title "pi N R^2"
+    "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:3:4 with yerrorlines lw 2 pt 7 title "coverage", \
+    "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:($11*($5/1000.0)**2*pi) with linespoints lw 2 pt 5 title "pi N R^2"
 
 # --- Panel 2: ratio ---
 set ylabel "(pi N R^2) / coverage"
 plot \
-    "afm_to_emt_input_001+003.dat" using 1:(($11*($5/1000.0)**2*pi)/$3) with linespoints lw 2 pt 7 title "(pi N R^2)/coverage"
+    "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:(($11*($5/1000.0)**2*pi)/$3) with linespoints lw 2 pt 7 title "(pi N R^2)/coverage"
 
 unset multiplot

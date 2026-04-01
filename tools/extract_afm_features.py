@@ -15,6 +15,7 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from afm_lib.features import AFMFeatureError, MapSummary, process_stp
+from afm_lib.dataset import image_dir_for_data_dir
 from afm_lib.plot_utils import save_overlay
 from afm_lib.stp_io import json_safe
 
@@ -25,11 +26,21 @@ def main() -> int:
     parser.add_argument("stp_files", nargs="+", type=Path, help="One or more .stp AFM files")
     parser.add_argument("--sigma-factor", type=float, default=2.0, help="Threshold = sigma_factor * robust_sigma")
     parser.add_argument("--min-pixels", type=int, default=6, help="Minimum connected-component size")
-    parser.add_argument("--outdir", type=Path, default=Path("data/experimental/intermediate/afm_features"), help="Output directory")
-    parser.add_argument("--save-overlay", action="store_true", help="Save overlay images with island contours")
+    parser.add_argument(
+        "--outdir",
+        type=Path,
+        default=Path("data/experimental/intermediate/afm_features"),
+        help="Data output directory for JSON summaries (default: data/experimental/intermediate/afm_features)",
+    )
+    parser.add_argument(
+        "--save-overlay",
+        action="store_true",
+        help="Save overlay images under the mirrored img/... directory",
+    )
     args = parser.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
+    overlay_dir = image_dir_for_data_dir(args.outdir)
 
     all_summaries: list[MapSummary] = []
     aggregate: dict[str, Any] = {"files": []}
@@ -52,7 +63,7 @@ def main() -> int:
 
         if args.save_overlay:
             save_overlay(
-                args.outdir / f"{stem}_overlay.png",
+                overlay_dir / f"{stem}_overlay.png",
                 arrays["z_rel"],
                 arrays["mask"].astype(bool),
                 title=stp_file.name,
@@ -85,6 +96,8 @@ def main() -> int:
         encoding="utf-8",
     )
 
+    if args.save_overlay:
+        print(f"Overlay images: {overlay_dir}")
     print(json.dumps(json_safe(aggregate["aggregate"]), indent=2))
     return 0
 

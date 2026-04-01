@@ -16,6 +16,26 @@ class DatasetError(RuntimeError):
     """Raised when AFM dataset aggregation fails."""
 
 
+def ensure_data_dir(path: Path) -> Path:
+    """Resolve and validate that a path lives under the top-level data tree."""
+    parts = path.parts
+    if not parts or parts[0] != "data":
+        raise DatasetError(f"Output path must live under data/: {path}")
+    return path
+
+
+def image_dir_for_data_dir(data_dir: Path) -> Path:
+    """Mirror a data domain under img/ for generated figures."""
+    data_dir = ensure_data_dir(data_dir)
+    return Path("img", *data_dir.parts[1:])
+
+
+def gnuplot_dir_for_data_dir(data_dir: Path) -> Path:
+    """Mirror a data domain under scripts/gnuplot/ for generated plot scripts."""
+    data_dir = ensure_data_dir(data_dir)
+    return Path("scripts", "gnuplot", *data_dir.parts[1:])
+
+
 def normalize_suffix(token: str) -> str:
     """Normalize accepted scan suffix selectors."""
     text = token.strip().lower()
@@ -164,6 +184,5 @@ def write_dat_lines(path: Path, header: str, lines: list[str]) -> None:
 
 def write_gnuplot_script(path: Path, template: str, dat_path: Path, png_name: str, label: str) -> None:
     """Write a gnuplot script using a shared template formatter."""
-    script = template.format(dat_name=dat_path.name, png_name=png_name, label=label)
+    script = template.format(dat_name=dat_path.as_posix(), png_name=png_name, label=label)
     write_text(path, script)
-
