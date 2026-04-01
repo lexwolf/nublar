@@ -1,12 +1,22 @@
 # Compiled binaries
 bin/*
 
+# Build directories
+build/
+
 # Object files / build junk
 *.o
 *.out
 *.a
 *.so
 *.dSYM/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Generated numerical outputs
+data/output/
 
 # Editor / OS noise
 *~
@@ -25,22 +35,5 @@ Thumbs.db
 *.fdb_latexmk
 *.toc
 
-# Optional: generated numerical outputs
-# Uncomment if data/output is reproducible and too large/noisy
-# data/output/**
-data/output/**/*.dat
-
-# Optional: generated images
-# Uncomment if img contains only generated artifacts
-# img/**
-
-# Keep directory structure if needed
+# Keep this file tracked
 !.gitignore
-
-# Build directories
-build/
-build/.cmake/
-build/Testing/
-
-# Generated numerical outputs
-data/output/

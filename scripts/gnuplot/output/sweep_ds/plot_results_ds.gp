@@ -1,5 +1,5 @@
 set terminal pngcairo size 1200,800 enhanced font "Helvetica,14"
-set output "img/deposition.png"
+set output "img/output/sweep_ds/deposition.png"
 
 set multiplot layout 2,2 title "Effective permittivity vs deposition step"
 set title "(a)"

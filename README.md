@@ -8,13 +8,13 @@
 - `include/`: project headers.
 - `bin/`: compiled executables (`mie`, `getmax`, `getenz`, `cm`, aliases).
 - `scripts/bash/`: orchestration and workflow scripts.
-- `scripts/gnuplot/`: plotting scripts.
+- `scripts/gnuplot/`: hand-written plotting scripts plus generated gnuplot files under mirrored subdirectories such as `scripts/gnuplot/output/` and `scripts/gnuplot/experimental/`.
 - `scripts/convert/`: conversion utilities for imported data.
 - `data/input/`: stable model input files.
 - `data/output/`: generated spectra, summaries, mapping files, and intermediate results.
 - `data/processed/convert/`: conversion dataset split into `original/` and `converted/`.
 - `data/experimental/`: experimental material split into `raw/`, `processed/`, and `reports/`.
-- `img/`: generated figures and static visual assets.
+- `img/`: generated figures and static visual assets, mirrored by data domain when outputs are produced from tooling.
 - `doc/`: papers, notes, and archived references.
 
 ## Build
@@ -51,8 +51,13 @@ bash scripts/bash/compare.bash <path-to-experimental-file> <filling-fraction>
 
 - Input parameters/material tables: `data/input/`
 - Numerical outputs: `data/output/`
+- Legacy workflow figures: `img/output/`
+- Legacy workflow generated gnuplot scripts: `scripts/gnuplot/output/`
 - Imported + converted helper datasets: `data/processed/convert/`
 - Experimental provenance:
   - raw AFM files: `data/experimental/raw/afm/`
+  - generated AFM tables: `data/experimental/final/` and `data/experimental/intermediate/...`
+  - generated AFM figures: `img/experimental/final/`, `img/experimental/intermediate/...`, and `img/experimental/afm/`
+  - generated AFM gnuplot scripts: `scripts/gnuplot/experimental/final/`
   - processed distributions/transmittance: `data/experimental/processed/`
   - report documents: `data/experimental/reports/`

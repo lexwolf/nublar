@@ -22,6 +22,8 @@ sigma_geo=1.20   # default (Battie)
 
 summary="data/output/summary.dat"
 mapping="data/output/mapping.dat"
+imgdir_base="img/output/sweep_f"
+plotdir="scripts/gnuplot/output/sweep_f"
 
 # -----------------------
 # Usage function
@@ -94,7 +96,7 @@ step=$(awk -v rmin=$range_min -v rmax=$range_max -v dens=$density \
 # -----------------------
 # Prepare files
 # -----------------------
-mkdir -p data/output
+mkdir -p data/output "$plotdir"
 echo "# step f Rave[nm] lam_max[nm] ENZ1[nm] ENZ2[nm]" > $summary
 echo "# file Rave f" > $mapping
 
@@ -140,19 +142,18 @@ done
 # -----------------------
 # Prepare image output path
 # -----------------------
-imgdir="img/sigma_geo=${sigma_geo}"
+imgdir="${imgdir_base}/sigma_geo=${sigma_geo}"
 mkdir -p "$imgdir"
 
 if $zero_flag; then
-    pngfile="img/0.png"
+    pngfile="${imgdir_base}/zero.png"
 elif ! $saturation; then
     pngfile="${imgdir}/ns_N=${square}.png"
 else
     pngfile="${imgdir}/N=${square}.png"
 fi
 
-
-plotfile="scripts/gnuplot/plot_results.gp"
+plotfile="${plotdir}/plot_results_sigma_geo=${sigma_geo}.gp"
 
 # -----------------------
 # Generate gnuplot script
@@ -219,8 +220,10 @@ if command -v gnuplot &> /dev/null; then
     echo "> Generating plot with gnuplot..."
     gnuplot $plotfile
     echo "  -> Plot saved as $pngfile"
+    echo "  -> Gnuplot script saved as $plotfile"
 else
     echo "!! gnuplot not found, skipping plotting step."
+    echo "   Generated gnuplot script: $plotfile"
 fi
 
 
@@ -257,7 +260,7 @@ step=$(awk -v rmin=$range_min -v rmax=$range_max -v dens=$density \
 # -----------------------
 # Prepare files
 # -----------------------
-mkdir -p data/output
+mkdir -p data/output "$imgdir_base" "$plotdir"
 echo "# step f Rave[nm] lam_max[nm] ENZ1[nm] ENZ2[nm]" > $summary
 echo "# file Rave f" > $mapping
 
@@ -303,8 +306,8 @@ done
 # -----------------------
 # Generate gnuplot script
 # -----------------------
-plotfile="scripts/gnuplot/plot_results.gp"
-pngfile="img/comparison.png"
+plotfile="${plotdir}/plot_results_comparison.gp"
+pngfile="${imgdir_base}/comparison.png"
 
 {
 cat <<EOF
@@ -380,6 +383,8 @@ if command -v gnuplot &> /dev/null; then
     echo "> Generating plot with gnuplot..."
     gnuplot $plotfile
     echo "  -> Plot saved as $pngfile"
+    echo "  -> Gnuplot script saved as $plotfile"
 else
     echo "!! gnuplot not found, skipping plotting step."
+    echo "   Generated gnuplot script: $plotfile"
 fi

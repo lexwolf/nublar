@@ -48,7 +48,10 @@ for effe in $(seq 0.1 0.1 0.3); do
     ./bin/mie $Rave $effe
 done
 
-script="scripts/gnuplot/effe_Rave=$Rave.gp"
+script_dir="scripts/gnuplot/output/10-30"
+img_dir="img/output/10-30"
+mkdir -p "$script_dir" "$img_dir"
+script="${script_dir}/effe_Rave=${Rave}.gp"
 
 # Create the Gnuplot script
 cat <<EOL > $script
@@ -58,7 +61,7 @@ set term pdf color enhanced size 15cm,8cm;
 sz=1.
 set size sz
 
-set output "img/10-30_Rave=${Rave}.pdf"
+set output "${img_dir}/10-30_Rave=${Rave}.pdf"
 
 set label 1 at screen 0.45, screen 0.95 "R_{ave} = ${Rave} nm"
 set multiplot layout 1, 2
@@ -73,3 +76,6 @@ plot[300:900] "data/output/Rave=${Rave}.00__f=0.100.dat" w l lw 2 t "f = 0.1",  
 unset multiplot
 unset output
 EOL
+
+echo "> Gnuplot script written to $script"
+echo "> Suggested run: gnuplot $script"
