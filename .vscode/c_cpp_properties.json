@@ -11,6 +11,7 @@
         "${workspaceFolder}/.vscode/cup_intellisense_qs.hpp"
       ],
       "includePath": [
+        "${workspaceFolder}/header",
         "${workspaceFolder}/extern/nano_geo_matrix/include",
         "${workspaceFolder}/extern/nano_geo_matrix/modules",
         "${workspaceFolder}/extern/nano_geo_matrix/modules/cup",
@@ -20,6 +21,7 @@
       ],
       "browse": {
         "path": [
+          "${workspaceFolder}/header",
           "${workspaceFolder}/src",
           "${workspaceFolder}/extern/nano_geo_matrix/modules",
           "${workspaceFolder}/extern/nano_geo_matrix/include",
@@ -42,6 +44,7 @@
         "${workspaceFolder}/.vscode/cup_intellisense_mie.hpp"
       ],
       "includePath": [
+        "${workspaceFolder}/header",
         "${workspaceFolder}/include",
         "${workspaceFolder}/extern/nano_geo_matrix/include",
         "${workspaceFolder}/extern/nano_geo_matrix/modules",
@@ -52,6 +55,7 @@
       ],
       "browse": {
         "path": [
+          "${workspaceFolder}/header",
           "${workspaceFolder}/include",
           "${workspaceFolder}/src",
           "${workspaceFolder}/extern/nano_geo_matrix/modules",

@@ -40,7 +40,7 @@ Rave=$1
 
 # Compile the code if -c flag is given
 if [ "$compile" = true ]; then
-    g++ -std=c++17 -Wall -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel -larmadillo
+    g++ -std=c++17 -Wall -Iheader -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 -L/usr/local/lib src/mie.cxx -o bin/mie -lcomplex_bessel -larmadillo
 fi
 
 # Loop from 0.1 to 0.3 in increments of 0.1

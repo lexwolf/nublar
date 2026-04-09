@@ -11,7 +11,7 @@ INPUT_FILE="${ROOT_DIR}/data/input/islas.dat"
 OUTPUT_DIR="${ROOT_DIR}/data/output/effe"
 TEMP_OUTPUT="${ROOT_DIR}/data/output/nublar.dat"
 
-g++ -std=c++17 -I"${ROOT_DIR}/include" -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 "${ROOT_DIR}/src/clausius-mossotti.cxx" -lgsl -o "${BIN_CM}"
+g++ -std=c++17 -I"${ROOT_DIR}/header" -I"${ROOT_DIR}/include" -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 "${ROOT_DIR}/src/clausius-mossotti.cxx" -lgsl -o "${BIN_CM}"
 rm -f "${OUTPUT_DIR}"/*
 mkdir -p "${OUTPUT_DIR}"
 # effemin=0.577;

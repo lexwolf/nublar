@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 NGM_ROOT="$(realpath "${ROOT_DIR}/extern/nano_geo_matrix")"
 NGM_INC="${NGM_ROOT}/include"
 NGM_CUP="${NGM_ROOT}/modules/cup"
-g++ -std=c++17 -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/clausius-mossotti.cxx -lgsl -o bin/cm
+g++ -std=c++17 -Iheader -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/clausius-mossotti.cxx -lgsl -o bin/cm
 
 is_number() {
     # Use regular expression to match the number pattern

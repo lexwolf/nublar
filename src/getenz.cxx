@@ -2,9 +2,9 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <vector>
-#include <limits>
 #include <cmath>
+#include <vector>
+#include "text_table.hpp"
 
 /*
 Example compilation:
@@ -12,19 +12,12 @@ Example compilation:
 NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
 
 g++ -std=c++17 \
+  -I../header \
   -I../include \
   -I"$NGM_ROOT/include" \
   -I"$NGM_ROOT/modules/cup" \
   getenz.cxx -o ../bin/getenz
 */
-
-// Helper: check if a string is numeric
-bool is_numeric(const std::string &s) {
-    if (s.empty()) return false;
-    char* endptr = nullptr;
-    std::strtod(s.c_str(), &endptr);
-    return (*endptr == '\0');
-}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
@@ -49,18 +42,9 @@ int main(int argc, char* argv[]) {
 
     while (std::getline(infile, line)) {
         if (line.empty()) continue;
-        if (line[0] == '#' || line[0] == '%') continue;
-
-        std::istringstream iss(line);
-        std::vector<std::string> tokens;
-        std::string tok;
-        while (iss >> tok) tokens.push_back(tok);
-        if ((int)tokens.size() < target_col) continue;
-
-        if (!is_numeric(tokens[0]) || !is_numeric(tokens[target_col-1])) continue;
-
-        double x_val = std::stod(tokens[0]);
-        double y_val = std::stod(tokens[target_col-1]);
+        const auto values = nublar::parse_first_and_column(line, target_col);
+        if (!values) continue;
+        const auto [x_val, y_val] = *values;
 
         if (prev_valid) {
             // Check for a sign change across [prev_y, y_val]

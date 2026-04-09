@@ -3,11 +3,12 @@
 #include <complex>
 #include <vector>
 #include <iomanip>
-#include <filesystem>
 #define CUP_BACKEND_QUASI_STATIC
 #include <nano_geo_matrix/core/mathNN.hpp>
 #include <nano_geo_matrix/quasi_static/geometry/single.hpp>
 #include <cup.hpp>
+#include "effective_medium.hpp"
+#include "project_paths.hpp"
 
 /*
 Example compilation:
@@ -15,6 +16,7 @@ Example compilation:
 NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
 
 g++ -std=c++17 \
+  -I../header \
   -I../include \
   -I"$NGM_ROOT/include" \
   -I"$NGM_ROOT/modules/cup" \
@@ -31,35 +33,10 @@ std::pair<double, double> getmax (std::vector<std::pair<double, double>> Data){
     return max;
     }
 
-std::complex<double>Maxwell_Garnett(double effe, std::complex<double> eps1, std::complex<double> eps2) {
-    // Calculate the effective permittivity using theMaxwell_Garnett mixing rules
-    std::complex<double> eps_eff;
-    double small_number_cutoff = 1e-6;
-
-    if (effe < 0 || effe > 1){
-        std::cout<<"WARNING: volume portion of inclusion material is out of range!"<<std::endl;
-        exit(-11);
-        }
-    std::complex<double> factor_up   = 2.*(1.-effe)*eps2+(1.+2.*effe)*eps1;
-    std::complex<double> factor_down = (2.+effe)*eps2+(1.-effe)*eps1;
-    if (norm(factor_down)<small_number_cutoff){
-        std::cout<<"WARNING: the effective medium is singular"<<std::endl;
-        exit(-22);
-        } else eps_eff = eps2*factor_up/ factor_down;
-    return eps_eff;
-}
-
 using namespace std;
 
 int main(int argc, char *argv[]) {
-    std::error_code ec;
-    std::filesystem::path exec_path = std::filesystem::weakly_canonical(
-        std::filesystem::absolute(argv[0]), ec);
-    std::string project_root = ".";
-    if (!ec && exec_path.has_parent_path()) {
-        project_root = exec_path.parent_path().parent_path().string();
-    }
-    std::filesystem::current_path(project_root, ec);
+    std::string project_root = nublar::set_current_path_to_project_root(argv[0]);
 
     std::complex<double> eps1, eps_eff, enne;
     double effe, lamin, lamax, lam, dlam, omeeV, erre, eps2, nair, nglas=1.5, erre1, erre2;
@@ -99,7 +76,7 @@ int main(int argc, char *argv[]) {
         lam     = lamin+i*dlam;
         omeeV   = h*j2eV*cc/(lam*1.e-9);
         eps1    = su.metal(omeeV);
-        eps_eff = Maxwell_Garnett(effe, eps1, eps2);
+        eps_eff = nublar::MaxwellGarnett(effe, eps1, eps2);
         enne    = sqrt(eps_eff);
         erre    = norm((nair-enne)/(nair+enne)); // reflectance
         absr    = exp(-4.*M_PI*enne.imag()*L/lam);
