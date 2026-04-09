@@ -1,0 +1,7 @@
+# time_s n_points wavelength_min_nm wavelength_max_nm transmittance_min transmittance_max sample_label
+10 167 300 798 0.0156535 0.75139 ITO_Ag_10s_T
+20 167 300 798 0.0142932 0.75741 ITO_Ag_20s_T
+30 167 300 798 0.0152119 0.891287 ITO_Ag_30s_T
+40 167 300 798 0.0128931 0.717526 ITO_Ag_40s_T
+50 167 300 798 0.0116848 0.741704 ITO_Ag_50s_T
+60 217 200 848 0.000349853 3.16873 ITO_Ag_60s

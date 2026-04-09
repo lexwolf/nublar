@@ -1,0 +1,7 @@
+sample_label,time_s,input_txt,original_name,wavelength_unit,n_points,wavelength_min_nm,wavelength_max_nm,transmittance_min,transmittance_max
+ITO_Ag_10s_T,10,data/experimental/processed/transmittance/ITO_Ag_10s_T_0.txt,"ito_10nm_ag_10s_t,dat",nm,167,300.0,798.0,0.0156535,0.75139
+ITO_Ag_20s_T,20,data/experimental/processed/transmittance/ITO_Ag_20s_T_0.txt,ito_10nm_ag_20s_t.dat,nm,167,300.0,798.0,0.0142932,0.75741
+ITO_Ag_30s_T,30,data/experimental/processed/transmittance/ITO_Ag_30s_T_0.txt,ito_10nm_ag_30s_t.dat,nm,167,300.0,798.0,0.0152119,0.891287
+ITO_Ag_40s_T,40,data/experimental/processed/transmittance/ITO_Ag_40s_T_0.txt,ito_10nm_ag_40s_t.dat,nm,167,300.0,798.0,0.0128931,0.717526
+ITO_Ag_50s_T,50,data/experimental/processed/transmittance/ITO_Ag_50s_T_0.txt,ito_10nm_ag_50s_t.dat,nm,167,300.0,798.0,0.0116848,0.741704
+ITO_Ag_60s,60,data/experimental/processed/transmittance/ITO_Ag_60s_T_0.txt,ito_10nm_ag_60s_t.dat,nm,217,200.0,848.0,0.000349853,3.16873
