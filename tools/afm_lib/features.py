@@ -17,9 +17,16 @@ class IslandRecord:
     area_px: int
     area_um2: float
     equivalent_radius_nm: float
+    min_height_nm: float
+    p50_height_nm: float
+    p95_height_nm: float
+    height_range_nm: float
     max_height_nm: float
     mean_height_nm: float
+    height_equivalent_radius_mean_nm: float
+    height_equivalent_radius_p95_nm: float
     volume_nm3: float
+    volume_equivalent_radius_nm: float
     centroid_x_um: float
     centroid_y_um: float
 
@@ -50,6 +57,11 @@ class MapSummary:
     mean_island_height_nm: float
     mean_equivalent_radius_nm: float
     std_equivalent_radius_nm: float
+    mean_p95_height_nm: float
+    mean_height_equivalent_radius_nm: float
+    mean_p95_height_equivalent_radius_nm: float
+    mean_volume_equivalent_radius_nm: float
+    std_volume_equivalent_radius_nm: float
     mean_volume_nm3: float
 
 
@@ -67,6 +79,13 @@ def equivalent_thickness_nm_from_volume(total_volume_nm3: float, total_scan_area
     if total_scan_area_nm2 <= 0:
         return 0.0
     return float(total_volume_nm3 / total_scan_area_nm2)
+
+
+def volume_equivalent_radius_nm_from_volume(volume_nm3: float) -> float:
+    """Compute equal-volume sphere radius from island volume in nm^3."""
+    if volume_nm3 <= 0.0:
+        return 0.0
+    return float(((3.0 * volume_nm3) / (4.0 * np.pi)) ** (1.0 / 3.0))
 
 
 def sigma_geo_from_radii_nm(radii_nm: list[float]) -> float:
@@ -104,6 +123,11 @@ def extract_islands(
         vol_nm3 = float(np.sum(heights) * pixel_area_nm2)
         cy_px = float(np.mean(yy[sel]))
         cx_px = float(np.mean(xx[sel]))
+        min_height_nm = float(np.min(heights))
+        p50_height_nm = float(np.quantile(heights, 0.50))
+        p95_height_nm = float(np.quantile(heights, 0.95))
+        max_height_nm = float(np.max(heights))
+        mean_height_nm = float(np.mean(heights))
 
         records.append(
             IslandRecord(
@@ -111,9 +135,16 @@ def extract_islands(
                 area_px=area_px,
                 area_um2=float(area_nm2 / 1e6),
                 equivalent_radius_nm=equivalent_radius_nm_from_area(area_nm2),
-                max_height_nm=float(np.max(heights)),
-                mean_height_nm=float(np.mean(heights)),
+                min_height_nm=min_height_nm,
+                p50_height_nm=p50_height_nm,
+                p95_height_nm=p95_height_nm,
+                height_range_nm=max_height_nm - min_height_nm,
+                max_height_nm=max_height_nm,
+                mean_height_nm=mean_height_nm,
+                height_equivalent_radius_mean_nm=0.5 * mean_height_nm,
+                height_equivalent_radius_p95_nm=0.5 * p95_height_nm,
                 volume_nm3=vol_nm3,
+                volume_equivalent_radius_nm=volume_equivalent_radius_nm_from_volume(vol_nm3),
                 centroid_x_um=float(cx_px * dx_nm / 1000.0),
                 centroid_y_um=float(cy_px * dy_nm / 1000.0),
             )
@@ -144,6 +175,19 @@ def build_summary(
 
     radii = np.array([record.equivalent_radius_nm for record in islands], dtype=float)
     heights = np.array([record.mean_height_nm for record in islands], dtype=float)
+    p95_heights = np.array([record.p95_height_nm for record in islands], dtype=float)
+    height_equiv_radii = np.array(
+        [record.height_equivalent_radius_mean_nm for record in islands],
+        dtype=float,
+    )
+    p95_height_equiv_radii = np.array(
+        [record.height_equivalent_radius_p95_nm for record in islands],
+        dtype=float,
+    )
+    volume_equiv_radii = np.array(
+        [record.volume_equivalent_radius_nm for record in islands],
+        dtype=float,
+    )
     volumes = np.array([record.volume_nm3 for record in islands], dtype=float)
 
     return MapSummary(
@@ -171,6 +215,14 @@ def build_summary(
         mean_island_height_nm=float(np.mean(heights)) if heights.size else 0.0,
         mean_equivalent_radius_nm=float(np.mean(radii)) if radii.size else 0.0,
         std_equivalent_radius_nm=float(np.std(radii)) if radii.size else 0.0,
+        mean_p95_height_nm=float(np.mean(p95_heights)) if p95_heights.size else 0.0,
+        mean_height_equivalent_radius_nm=float(np.mean(height_equiv_radii)) if height_equiv_radii.size else 0.0,
+        mean_p95_height_equivalent_radius_nm=float(np.mean(p95_height_equiv_radii))
+        if p95_height_equiv_radii.size else 0.0,
+        mean_volume_equivalent_radius_nm=float(np.mean(volume_equiv_radii))
+        if volume_equiv_radii.size else 0.0,
+        std_volume_equivalent_radius_nm=float(np.std(volume_equiv_radii))
+        if volume_equiv_radii.size else 0.0,
         mean_volume_nm3=float(np.mean(volumes)) if volumes.size else 0.0,
     )
 
@@ -221,4 +273,3 @@ def process_stp(
         "mask": mask.astype(np.uint8),
     }
     return summary, islands, arrays
-

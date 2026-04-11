@@ -85,6 +85,22 @@ def main() -> int:
         "equivalent_thickness_nm_std": float(np.std(arr("equivalent_thickness_nm"))),
         "mean_equivalent_radius_nm_mean": float(np.mean(arr("mean_equivalent_radius_nm"))),
         "mean_equivalent_radius_nm_std": float(np.std(arr("mean_equivalent_radius_nm"))),
+        "mean_p95_height_nm_mean": float(np.mean(arr("mean_p95_height_nm"))),
+        "mean_p95_height_nm_std": float(np.std(arr("mean_p95_height_nm"))),
+        "mean_height_equivalent_radius_nm_mean": float(np.mean(arr("mean_height_equivalent_radius_nm"))),
+        "mean_height_equivalent_radius_nm_std": float(np.std(arr("mean_height_equivalent_radius_nm"))),
+        "mean_p95_height_equivalent_radius_nm_mean": float(
+            np.mean(arr("mean_p95_height_equivalent_radius_nm"))
+        ),
+        "mean_p95_height_equivalent_radius_nm_std": float(
+            np.std(arr("mean_p95_height_equivalent_radius_nm"))
+        ),
+        "mean_volume_equivalent_radius_nm_mean": float(
+            np.mean(arr("mean_volume_equivalent_radius_nm"))
+        ),
+        "mean_volume_equivalent_radius_nm_std": float(
+            np.std(arr("mean_volume_equivalent_radius_nm"))
+        ),
         "number_density_per_um2_mean": float(np.mean(arr("number_density_per_um2"))),
         "number_density_per_um2_std": float(np.std(arr("number_density_per_um2"))),
         "island_count_mean": float(np.mean(arr("island_count"))),
