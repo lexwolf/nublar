@@ -56,9 +56,9 @@ bash scripts/bash/compare.bash <path-to-experimental-file> <filling-fraction>
 - Imported + converted helper datasets: `data/processed/convert/`
 - Experimental provenance:
   - raw AFM files: `data/experimental/raw/afm/`
-  - generated AFM tables: `data/experimental/final/` and `data/experimental/intermediate/...`
-  - generated AFM figures: `img/experimental/final/`, `img/experimental/intermediate/...`, and `img/experimental/afm/`
-  - generated AFM gnuplot scripts: `scripts/gnuplot/experimental/final/`
+  - generated AFM tables: `data/experimental/final/afm/` and `data/experimental/intermediate/...`
+  - generated AFM figures: `img/experimental/final/afm/`, `img/experimental/intermediate/...`, and `img/experimental/afm/`
+  - generated AFM gnuplot scripts: `scripts/gnuplot/experimental/final/afm/`
   - processed distributions/transmittance: `data/experimental/processed/`
   - report documents: `data/experimental/reports/`
 

@@ -9,7 +9,7 @@ set grid
 set key top left
 set xlabel "Deposition time (s)"
 
-# Columns in afm_to_emt_input_001+003.dat
+# Columns in afm/afm_to_emt_input_001+003.dat
 # 1  time_s
 # 2  n_scans
 # 3  coverage
@@ -28,12 +28,12 @@ set xlabel "Deposition time (s)"
 # --- Panel 1: raw comparison ---
 set ylabel "Coverage / proxy"
 plot \
-    "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:3:4 with yerrorlines lw 2 pt 7 title "coverage", \
-    "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:($11*($5/1000.0)**2*pi) with linespoints lw 2 pt 5 title "pi N R^2"
+    "data/experimental/final/afm/afm_to_emt_input_001+003.dat" using 1:3:4 with yerrorlines lw 2 pt 7 title "coverage", \
+    "data/experimental/final/afm/afm_to_emt_input_001+003.dat" using 1:($11*($5/1000.0)**2*pi) with linespoints lw 2 pt 5 title "pi N R^2"
 
 # --- Panel 2: ratio ---
 set ylabel "(pi N R^2) / coverage"
 plot \
-    "data/experimental/final/afm_to_emt_input_001+003.dat" using 1:(($11*($5/1000.0)**2*pi)/$3) with linespoints lw 2 pt 7 title "(pi N R^2)/coverage"
+    "data/experimental/final/afm/afm_to_emt_input_001+003.dat" using 1:(($11*($5/1000.0)**2*pi)/$3) with linespoints lw 2 pt 7 title "(pi N R^2)/coverage"
 
 unset multiplot

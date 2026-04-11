@@ -41,8 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--outdir",
         type=Path,
-        default=Path("data/experimental/final"),
-        help="Data output directory for CSV and DAT files (default: data/experimental/final).",
+        default=Path("data/experimental/final/afm"),
+        help="Data output directory for CSV and DAT files (default: data/experimental/final/afm).",
     )
     parser.add_argument(
         "--basename",
