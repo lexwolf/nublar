@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 NGM_ROOT="$(realpath "${ROOT_DIR}/extern/nano_geo_matrix")"
 NGM_INC="${NGM_ROOT}/include"
 NGM_CUP="${NGM_ROOT}/modules/cup"
-g++ -std=c++17 -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/getmax.cxx -o bin/gmax
+g++ -std=c++17 -Iheader -Iinclude -I"${NGM_INC}" -I"${NGM_CUP}" -I/usr/include/eigen3 src/getmax.cxx -o bin/gmax
 clmn=2;
 for i in `ls data/processed/convert/converted`; do
     times=`echo $i| tr -d -c 0-90-9`

@@ -2,9 +2,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <vector>
 #include <limits>
-#include <cctype>
+#include "text_table.hpp"
 
 /*
 Example compilation:
@@ -12,19 +11,12 @@ Example compilation:
 NGM_ROOT=$(realpath ../extern/nano_geo_matrix)
 
 g++ -std=c++17 \
+  -I../header \
   -I../include \
   -I"$NGM_ROOT/include" \
   -I"$NGM_ROOT/modules/cup" \
   getmax.cxx -o ../bin/getmax
 */
-
-// Helper: check if a string is numeric
-bool is_numeric(const std::string &s) {
-    if (s.empty()) return false;
-    char* endptr = nullptr;
-    std::strtod(s.c_str(), &endptr);
-    return (*endptr == '\0');
-}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
@@ -47,23 +39,9 @@ int main(int argc, char* argv[]) {
     std::string line;
     while (std::getline(infile, line)) {
         if (line.empty()) continue;
-
-        // Skip header lines starting with # or %
-        if (line[0] == '#' || line[0] == '%') continue;
-
-        std::istringstream iss(line);
-        std::vector<std::string> tokens;
-        std::string tok;
-        while (iss >> tok) {
-            tokens.push_back(tok);
-        }
-        if ((int)tokens.size() < target_col) continue;
-
-        // Check that the target column is numeric
-        if (!is_numeric(tokens[0]) || !is_numeric(tokens[target_col-1])) continue;
-
-        double x_val = std::stod(tokens[0]);
-        double y_val = std::stod(tokens[target_col-1]);
+        const auto values = nublar::parse_first_and_column(line, target_col);
+        if (!values) continue;
+        const auto [x_val, y_val] = *values;
 
         if (y_val > max_val) {
             max_val = y_val;

@@ -10,9 +10,10 @@ NGM_CUP := $(NGM_ROOT)/modules/cup
 BIN_DIR := bin
 SRC_DIR := src
 INC_DIR := include
+HEADER_DIR := header
 DATA_DIR := data
 SCRIPT_DIR := scripts
-CXXFLAGS += -I$(INC_DIR) -I$(NGM_INC) -I$(NGM_CUP) -I/usr/include/eigen3
+CXXFLAGS += -I$(HEADER_DIR) -I$(INC_DIR) -I$(NGM_INC) -I$(NGM_CUP) -I/usr/include/eigen3
 
 CORE_TARGETS := $(BIN_DIR)/mie $(BIN_DIR)/getmax $(BIN_DIR)/getenz $(BIN_DIR)/cm
 ALIASES := $(BIN_DIR)/gmax $(BIN_DIR)/genz

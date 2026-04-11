@@ -1,5 +1,6 @@
 {
   "C_Cpp.default.includePath": [
+    "${workspaceFolder}/header",
     "${workspaceFolder}/include",
     "${workspaceFolder}/extern/nano_geo_matrix/include",
     "${workspaceFolder}/extern/nano_geo_matrix/modules",
@@ -9,6 +10,7 @@
     "/usr/include/eigen3"
   ],
   "C_Cpp.default.browse.path": [
+    "${workspaceFolder}/header",
     "${workspaceFolder}/include",
     "${workspaceFolder}/src",
     "${workspaceFolder}/extern/nano_geo_matrix/modules",
