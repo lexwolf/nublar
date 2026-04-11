@@ -61,3 +61,13 @@ bash scripts/bash/compare.bash <path-to-experimental-file> <filling-fraction>
   - generated AFM gnuplot scripts: `scripts/gnuplot/experimental/final/`
   - processed distributions/transmittance: `data/experimental/processed/`
   - report documents: `data/experimental/reports/`
+
+## Submodule setup
+
+This repository uses `extern/nano_geo_matrix` as a git submodule.
+
+After cloning, run:
+
+```bash
+git submodule update --init --recursive
+```
