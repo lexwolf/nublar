@@ -120,6 +120,7 @@ def build_rows(
         thick_mu, thick_std = mean_std(thickness_vals)
         dens_mu, dens_std = mean_std(density_vals)
         h_mu, h_std = mean_std(height_vals)
+        effe_proxy = thick_mu / h_mu if h_mu > 0.0 else 0.0
 
         row = {
             "time_s": time_s,
@@ -127,6 +128,8 @@ def build_rows(
             "sources": ";".join(sorted(e["_source"] for e in entries)),
             "coverage_fraction": coverage_mu,
             "coverage_fraction_std": coverage_std,
+            "effe_proxy": effe_proxy,
+            "effe_proxy_name": "equivalent_thickness_over_mean_island_height",
             "Rave_nm": rave_mu,
             "Rave_nm_std": rave_std,
             "radius_proxy_name": radius_proxy,
@@ -169,6 +172,8 @@ CSV_FIELDNAMES = [
     "sources",
     "coverage_fraction",
     "coverage_fraction_std",
+    "effe_proxy",
+    "effe_proxy_name",
     "Rave_nm",
     "Rave_nm_std",
     "radius_proxy_name",
@@ -205,7 +210,7 @@ CSV_FIELDNAMES = [
 def write_dat(rows: list[dict[str, Any]], path: Path) -> None:
     header = (
         "# time_s n_scans "
-        "coverage coverage_std "
+        "coverage coverage_std effe_proxy effe_name "
         "Rave_nm Rave_nm_std "
         "radius_proxy_name "
         "sigma_geo sigma_geo_std "
@@ -220,6 +225,7 @@ def write_dat(rows: list[dict[str, Any]], path: Path) -> None:
         (
             "{time_s} {n_scans} "
             "{coverage_fraction:.10g} {coverage_fraction_std:.10g} "
+            "{effe_proxy:.10g} {effe_proxy_name} "
             "{Rave_nm:.10g} {Rave_nm_std:.10g} "
             "{radius_proxy_name} "
             "{sigma_geo_radius:.10g} {sigma_geo_radius_std:.10g} "
@@ -250,29 +256,31 @@ set xlabel "Deposition time (s)"
 # 2  n_scans
 # 3  coverage
 # 4  coverage_std
-# 5  Rave_nm
-# 6  Rave_nm_std
-# 7  radius_proxy_name
-# 8  sigma_geo
-# 9  sigma_geo_std
-# 10 eq_thickness_nm
-# 11 eq_thickness_nm_std
-# 12 density_um2
-# 13 density_um2_std
-# 14 mean_height_nm
-# 15 mean_height_nm_std
+# 5  effe_proxy
+# 6  effe_name
+# 7  Rave_nm
+# 8  Rave_nm_std
+# 9  radius_proxy_name
+# 10 sigma_geo
+# 11 sigma_geo_std
+# 12 eq_thickness_nm
+# 13 eq_thickness_nm_std
+# 14 density_um2
+# 15 density_um2_std
+# 16 mean_height_nm
+# 17 mean_height_nm_std
 
 set ylabel "Coverage fraction"
 plot "{dat_name}" using 1:3:4 title "coverage"
 
 set ylabel "Rave (nm)"
-plot "{dat_name}" using 1:5:6 title "Rave"
+plot "{dat_name}" using 1:7:8 title "Rave"
 
 set ylabel "sigma_geo"
-plot "{dat_name}" using 1:8:9 title "sigma_geo"
+plot "{dat_name}" using 1:10:11 title "sigma_geo"
 
 set ylabel "Equivalent thickness (nm)"
-plot "{dat_name}" using 1:10:11 title "eq thickness"
+plot "{dat_name}" using 1:12:13 title "eq thickness"
 
 unset multiplot
 '''

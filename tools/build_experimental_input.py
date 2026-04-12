@@ -234,6 +234,7 @@ def build_rows(
         density_mu, density_std = mean_std(density_vals)
         height_mu, height_std = mean_std(height_vals)
         afm_rave_mu, afm_rave_std = mean_std(afm_rave_vals)
+        effe_proxy = thickness_mu / height_mu if height_mu > 0.0 else 0.0
 
         fit = fit_two_lognormal_mixture(pooled_radii)
 
@@ -244,8 +245,8 @@ def build_rows(
                 "afm_sources": ";".join(sorted(e["_source"] for e in entries)),
                 "coverage_fraction": coverage_mu,
                 "coverage_fraction_std": coverage_std,
-                "effe_proxy": coverage_mu,
-                "effe_proxy_name": "coverage_fraction",
+                "effe_proxy": effe_proxy,
+                "effe_proxy_name": "equivalent_thickness_over_mean_island_height",
                 "afm_Rave_nm": afm_rave_mu,
                 "afm_Rave_nm_std": afm_rave_std,
                 "radius_proxy_name": radius_proxy,
