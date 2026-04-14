@@ -26,21 +26,14 @@ from afm_lib.effe_proxy import (  # noqa: E402
     compute_effe_proxy,
     get_effe_proxy_formula_string,
 )
+from afm_lib.radius_proxy import (  # noqa: E402
+    MANIFEST_RAVE_FIELD_FOR_RADIUS_PROXY,
+    RADIUS_PROXY_CHOICES,
+    SUMMARY_FIELD_FOR_RADIUS_PROXY,
+)
 
 
 TIME_RE = re.compile(r"_(\d+)s(?:_|\.|$)", re.IGNORECASE)
-RADIUS_PROXY_CHOICES = (
-    "equivalent_radius_nm",
-    "volume_equivalent_radius_nm",
-    "height_equivalent_radius_mean_nm",
-    "height_equivalent_radius_p95_nm",
-)
-SUMMARY_FIELD_FOR_RADIUS_PROXY = {
-    "equivalent_radius_nm": "mean_equivalent_radius_nm",
-    "volume_equivalent_radius_nm": "mean_volume_equivalent_radius_nm",
-    "height_equivalent_radius_mean_nm": "mean_height_equivalent_radius_nm",
-    "height_equivalent_radius_p95_nm": "mean_p95_height_equivalent_radius_nm",
-}
 
 
 class ExperimentalInputError(RuntimeError):
@@ -248,6 +241,15 @@ def build_rows(
         density_mu, density_std = mean_std(density_vals)
         height_mu, height_std = mean_std(height_vals)
         afm_rave_mu, afm_rave_std = mean_std(afm_rave_vals)
+        rave_by_proxy = {
+            manifest_field: mean_std(
+                [
+                    float(e["summary"][SUMMARY_FIELD_FOR_RADIUS_PROXY[proxy_name]])
+                    for e in entries
+                ]
+            )[0]
+            for proxy_name, manifest_field in MANIFEST_RAVE_FIELD_FOR_RADIUS_PROXY.items()
+        }
         effe_proxy = compute_effe_proxy(
             effe_proxy_name,
             coverage_mu,
@@ -305,6 +307,7 @@ def build_rows(
                 "lambda_grid_is_uniform": int(trans.lambda_grid_is_uniform),
                 "transmittance_dat": trans.path.as_posix(),
                 "transmittance_label": trans.sample_label,
+                **rave_by_proxy,
             }
         )
 
@@ -357,6 +360,10 @@ CSV_FIELDNAMES = [
     "lambda_grid_is_uniform",
     "transmittance_dat",
     "transmittance_label",
+    "Rave_equivalent_radius_nm",
+    "Rave_volume_equivalent_radius_nm",
+    "Rave_height_equivalent_radius_mean_nm",
+    "Rave_height_equivalent_radius_p95_nm",
 ]
 
 
@@ -371,7 +378,9 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
         "eq_thickness_nm eq_thickness_nm_std density_um2 density_um2_std "
         "mean_height_nm mean_height_nm_std "
         "n_lambda lamin_nm lamax_nm dlam_nm lambda_grid_is_uniform "
-        "transmittance_label transmittance_dat afm_sources\n"
+        "transmittance_label transmittance_dat afm_sources "
+        "Rave_equivalent_radius_nm Rave_volume_equivalent_radius_nm "
+        "Rave_height_equivalent_radius_mean_nm Rave_height_equivalent_radius_p95_nm\n"
     )
     lines = [
         (
@@ -390,7 +399,9 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
             "{number_density_per_um2:.10g} {number_density_per_um2_std:.10g} "
             "{mean_island_height_nm:.10g} {mean_island_height_nm_std:.10g} "
             "{n_lambda} {lamin_nm:.10g} {lamax_nm:.10g} {dlam_nm:.10g} {lambda_grid_is_uniform} "
-            "{transmittance_label} {transmittance_dat} {afm_sources}\n"
+            "{transmittance_label} {transmittance_dat} {afm_sources} "
+            "{Rave_equivalent_radius_nm:.10g} {Rave_volume_equivalent_radius_nm:.10g} "
+            "{Rave_height_equivalent_radius_mean_nm:.10g} {Rave_height_equivalent_radius_p95_nm:.10g}\n"
         ).format(**row)
         for row in rows
     ]
