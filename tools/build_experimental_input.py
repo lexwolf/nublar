@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 import re
 import sys
 from dataclasses import dataclass
@@ -22,6 +21,11 @@ from afm_lib.dataset import (  # noqa: E402
     write_dat_lines,
 )
 from afm_lib.distribution_fit import fit_two_lognormal_mixture  # noqa: E402
+from afm_lib.effe_proxy import (  # noqa: E402
+    EFFE_PROXY_CHOICES,
+    compute_effe_proxy,
+    get_effe_proxy_formula_string,
+)
 
 
 TIME_RE = re.compile(r"_(\d+)s(?:_|\.|$)", re.IGNORECASE)
@@ -95,6 +99,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Per-island radius proxy used for the two-lognormal fit and exported Rave "
             "(default: volume_equivalent_radius_nm)"
+        ),
+    )
+    parser.add_argument(
+        "--effe-proxy",
+        choices=EFFE_PROXY_CHOICES,
+        default="eq_thickness_over_mean_height",
+        help=(
+            "Active effe proxy written into the manifest "
+            "(default: eq_thickness_over_mean_height)"
         ),
     )
     parser.add_argument(
@@ -186,6 +199,7 @@ def build_rows(
     afm_grouped: dict[int, list[dict[str, Any]]],
     transmittance: dict[int, TransmittanceSummary],
     radius_proxy: str,
+    effe_proxy_name: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -234,7 +248,13 @@ def build_rows(
         density_mu, density_std = mean_std(density_vals)
         height_mu, height_std = mean_std(height_vals)
         afm_rave_mu, afm_rave_std = mean_std(afm_rave_vals)
-        effe_proxy = thickness_mu / height_mu if height_mu > 0.0 else 0.0
+        effe_proxy = compute_effe_proxy(
+            effe_proxy_name,
+            coverage_mu,
+            thickness_mu,
+            height_mu,
+            afm_rave_mu,
+        )
 
         fit = fit_two_lognormal_mixture(pooled_radii)
 
@@ -246,7 +266,8 @@ def build_rows(
                 "coverage_fraction": coverage_mu,
                 "coverage_fraction_std": coverage_std,
                 "effe_proxy": effe_proxy,
-                "effe_proxy_name": "equivalent_thickness_over_mean_island_height",
+                "effe_proxy_name": effe_proxy_name,
+                "effe_proxy_formula": get_effe_proxy_formula_string(effe_proxy_name),
                 "afm_Rave_nm": afm_rave_mu,
                 "afm_Rave_nm_std": afm_rave_std,
                 "radius_proxy_name": radius_proxy,
@@ -298,6 +319,7 @@ CSV_FIELDNAMES = [
     "coverage_fraction_std",
     "effe_proxy",
     "effe_proxy_name",
+    "effe_proxy_formula",
     "afm_Rave_nm",
     "afm_Rave_nm_std",
     "radius_proxy_name",
@@ -340,7 +362,7 @@ CSV_FIELDNAMES = [
 
 def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
     header = (
-        "# time_s n_afm_scans coverage coverage_std effe_proxy "
+        "# time_s n_afm_scans coverage coverage_std effe_proxy effe_proxy_name effe_proxy_formula "
         "afm_Rave_nm afm_Rave_nm_std radius_proxy_name dist_type axis_name fit_status fit_path "
         "log_likelihood bic fit_converged fit_iterations fit_samples "
         "w1 muL1 sigL1 mean1_nm std1_nm "
@@ -355,7 +377,7 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
         (
             "{time_s} {n_afm_scans} "
             "{coverage_fraction:.10g} {coverage_fraction_std:.10g} "
-            "{effe_proxy:.10g} "
+            "{effe_proxy:.10g} {effe_proxy_name} {effe_proxy_formula} "
             "{afm_Rave_nm:.10g} {afm_Rave_nm_std:.10g} "
             "{radius_proxy_name} "
             "{distribution_type} {distribution_axis_name} {distribution_fit_status} {distribution_fit_path} "
@@ -382,7 +404,7 @@ def main() -> int:
     afm_files = gather_json_files(args.afm_inputs)
     afm_grouped = load_filtered_payload_records(afm_files, suffixes)
     transmittance = gather_transmittance_summaries(args.transmittance_dir)
-    rows = build_rows(afm_grouped, transmittance, args.radius_proxy)
+    rows = build_rows(afm_grouped, transmittance, args.radius_proxy, args.effe_proxy)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     csv_path = args.outdir / f"{args.basename}.csv"
