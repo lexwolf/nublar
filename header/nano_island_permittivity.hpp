@@ -24,6 +24,7 @@ struct ExperimentalRow {
     int n_lambda = 0;
     double effe = 0.0;
     double rave_nm = 0.0;
+    double thickness_nm = 0.0;
     double w1 = 0.0;
     double mu_l1 = 0.0;
     double sig_l1 = 0.0;
@@ -267,12 +268,14 @@ inline ExperimentalRow parse_manifest_row(const std::string& line)
         throw std::runtime_error("Manifest row is malformed: " + line);
     }
 
+    row.thickness_nm = eq_thickness;
+
     if (dist_type != "two_lognormal") {
         throw std::runtime_error("Unsupported distribution type in manifest: " + dist_type);
     }
 
-    if (row.rave_nm <= 0.0 || row.effe < 0.0 || row.effe > 1.0) {
-        throw std::runtime_error("Manifest row has invalid Rave or effe values");
+    if (row.rave_nm <= 0.0 || row.thickness_nm <= 0.0 || row.effe < 0.0 || row.effe > 1.0) {
+        throw std::runtime_error("Manifest row has invalid Rave, thickness, or effe values");
     }
 
     if (row.n_lambda <= 0 || row.dlam_nm <= 0.0) {
