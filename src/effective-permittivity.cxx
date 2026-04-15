@@ -71,9 +71,8 @@ void write_spectrum(const std::string& project_root,
 
         const std::complex<double> eps_metal = sphere.metal(omega_ev);
         const std::complex<double> eps_cm = nublar::MaxwellGarnett(row.effe, eps_metal, host_eps);
-        const std::complex<double> rhs = nublar::mmgm_right_hand_mixture(
+        const std::complex<double> eps_mmgm = nublar::mmgm_effective_permittivity(
             row.rave_nm, eps_metal, host_eps, wavelength_nm, row.effe, row);
-        const std::complex<double> eps_mmgm = (1.0 + 2.0 * rhs) * host_eps / (1.0 - rhs);
 
         out << wavelength_nm << " "
             << omega_ev << " "

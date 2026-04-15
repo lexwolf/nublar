@@ -163,6 +163,18 @@ inline std::complex<double> mmgm_right_hand_mixture(double average_radius_nm,
            * integral;
 }
 
+inline std::complex<double> mmgm_effective_permittivity(double average_radius_nm,
+                                                        std::complex<double> inclusion_eps,
+                                                        std::complex<double> host_eps,
+                                                        double wavelength_nm,
+                                                        double volume_fraction,
+                                                        const ExperimentalRow& row)
+{
+    const std::complex<double> rhs = mmgm_right_hand_mixture(
+        average_radius_nm, inclusion_eps, host_eps, wavelength_nm, volume_fraction, row);
+    return (1.0 + 2.0 * rhs) * host_eps / (1.0 - rhs);
+}
+
 inline ExperimentalRow parse_manifest_row(const std::string& line)
 {
     std::istringstream iss(line);
