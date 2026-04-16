@@ -70,6 +70,17 @@ struct ToyCase {
     std::complex<double> n_out;
 };
 
+struct SingleSlabTmmDebug {
+    std::complex<double> beta;
+    std::complex<double> exp_i_beta;
+    std::complex<double> exp_2i_beta;
+    std::complex<double> m11;
+    std::complex<double> m12;
+    std::complex<double> m21;
+    std::complex<double> m22;
+    RtCoefficients rt;
+};
+
 std::filesystem::path output_path_for_time(const std::string& project_root, int time_s)
 {
     return std::filesystem::path(project_root)
@@ -157,8 +168,8 @@ RtCoefficients coherent_stack_rt(const std::complex<double>& n_in,
         const cd s = std::sin(delta);
 
         const cd a11 = c;
-        const cd a12 = cd(0.0, 1.0) * s / n_layer;
-        const cd a21 = cd(0.0, 1.0) * n_layer * s;
+        const cd a12 = -cd(0.0, 1.0) * s / n_layer;
+        const cd a21 = -cd(0.0, 1.0) * n_layer * s;
         const cd a22 = c;
 
         const cd new_m11 = m11 * a11 + m12 * a21;
@@ -211,6 +222,78 @@ bool violates_passivity(double R, double T, double A)
     return R < -kTol || T < -kTol || T > 1.0 + kTol || A < -kTol;
 }
 
+RtCoefficients single_slab_rt_analytic(const std::complex<double>& n_in,
+                                       const std::complex<double>& n_slab,
+                                       double slab_thickness_nm,
+                                       const std::complex<double>& n_out,
+                                       double wavelength_nm)
+{
+    using cd = std::complex<double>;
+
+    const cd r01 = (n_in - n_slab) / (n_in + n_slab);
+    const cd r12 = (n_slab - n_out) / (n_slab + n_out);
+    const cd t01 = (2.0 * n_in) / (n_in + n_slab);
+    const cd t12 = (2.0 * n_slab) / (n_slab + n_out);
+    const cd beta = (2.0 * kPi / wavelength_nm) * n_slab * slab_thickness_nm;
+    const cd exp_i_beta = std::exp(cd(0.0, 1.0) * beta);
+    const cd exp_2i_beta = std::exp(cd(0.0, 2.0) * beta);
+    const cd denom = cd(1.0, 0.0) + r01 * r12 * exp_2i_beta;
+
+    const cd r = (r01 + r12 * exp_2i_beta) / denom;
+    const cd t = (t01 * t12 * exp_i_beta) / denom;
+
+    const double R = std::norm(r);
+    const double incident_flux = forward_power_flux(n_in, cd(1.0, 0.0));
+    const double transmitted_flux = forward_power_flux(n_out, t);
+    const double T = (incident_flux > 0.0)
+        ? (transmitted_flux / incident_flux)
+        : std::numeric_limits<double>::quiet_NaN();
+
+    return {r, t, R, T};
+}
+
+SingleSlabTmmDebug single_slab_rt_tmm_debug(const std::complex<double>& n_in,
+                                            const std::complex<double>& n_slab,
+                                            double slab_thickness_nm,
+                                            const std::complex<double>& n_out,
+                                            double wavelength_nm)
+{
+    using cd = std::complex<double>;
+
+    const cd beta = (2.0 * kPi / wavelength_nm) * n_slab * slab_thickness_nm;
+    const cd exp_i_beta = std::exp(cd(0.0, 1.0) * beta);
+    const cd exp_2i_beta = std::exp(cd(0.0, 2.0) * beta);
+    const cd c = std::cos(beta);
+    const cd s = std::sin(beta);
+
+    const cd m11 = c;
+    const cd m12 = -cd(0.0, 1.0) * s / n_slab;
+    const cd m21 = -cd(0.0, 1.0) * n_slab * s;
+    const cd m22 = c;
+
+    const cd denom = n_in * m11 + n_in * n_out * m12 + m21 + n_out * m22;
+    const cd r = (n_in * m11 + n_in * n_out * m12 - m21 - n_out * m22) / denom;
+    const cd t = (2.0 * n_in) / denom;
+
+    const double R = std::norm(r);
+    const double incident_flux = forward_power_flux(n_in, cd(1.0, 0.0));
+    const double transmitted_flux = forward_power_flux(n_out, t);
+    const double T = (incident_flux > 0.0)
+        ? (transmitted_flux / incident_flux)
+        : std::numeric_limits<double>::quiet_NaN();
+
+    return {
+        beta,
+        exp_i_beta,
+        exp_2i_beta,
+        m11,
+        m12,
+        m21,
+        m22,
+        {r, t, R, T},
+    };
+}
+
 int run_toy_front_stack_diagnostic(const std::string& project_root)
 {
     const std::vector<ToyCase> toy_cases = {
@@ -243,7 +326,13 @@ int run_toy_front_stack_diagnostic(const std::string& project_root)
     out << "# Toy front-stack diagnostic using coherent_stack_rt()\n";
     out << "# columns: case_label lambda_nm "
         << "n_in_re n_in_im n_slab_re n_slab_im d_slab_nm n_out_re n_out_im "
-        << "r_re r_im t_re t_im R T A_front\n";
+        << "beta_re beta_im exp_i_beta_re exp_i_beta_im exp_2i_beta_re exp_2i_beta_im "
+        << "M11_re M11_im M12_re M12_im M21_re M21_im M22_re M22_im "
+        << "R_tmm T_tmm A_tmm "
+        << "R_analytic T_analytic A_analytic "
+        << "dR dT dA "
+        << "r_tmm_re r_tmm_im t_tmm_re t_tmm_im "
+        << "r_analytic_re r_analytic_im t_analytic_re t_analytic_im\n";
     out << std::fixed << std::setprecision(10);
 
     bool any_failure = false;
@@ -252,9 +341,21 @@ int run_toy_front_stack_diagnostic(const std::string& project_root)
             {toy_case.n_slab * toy_case.n_slab, toy_case.d_slab_nm},
         };
 
-        const RtCoefficients rt = coherent_stack_rt(
+        const RtCoefficients rt_tmm = coherent_stack_rt(
             toy_case.n_in, layers, toy_case.n_out, toy_case.wavelength_nm);
-        const double A_front = 1.0 - rt.R - rt.T;
+        const SingleSlabTmmDebug tmm_debug = single_slab_rt_tmm_debug(
+            toy_case.n_in, toy_case.n_slab, toy_case.d_slab_nm, toy_case.n_out, toy_case.wavelength_nm);
+        const RtCoefficients rt_analytic = single_slab_rt_analytic(
+            toy_case.n_in, toy_case.n_slab, toy_case.d_slab_nm, toy_case.n_out, toy_case.wavelength_nm);
+
+        const double A_tmm = 1.0 - rt_tmm.R - rt_tmm.T;
+        const double A_analytic = 1.0 - rt_analytic.R - rt_analytic.T;
+        const double dR = rt_tmm.R - rt_analytic.R;
+        const double dT = rt_tmm.T - rt_analytic.T;
+        const double dA = A_tmm - A_analytic;
+
+        const bool tmm_failed = violates_passivity(rt_tmm.R, rt_tmm.T, A_tmm);
+        const bool analytic_failed = violates_passivity(rt_analytic.R, rt_analytic.T, A_analytic);
 
         out << toy_case.label << " "
             << toy_case.wavelength_nm << " "
@@ -262,23 +363,33 @@ int run_toy_front_stack_diagnostic(const std::string& project_root)
             << toy_case.n_slab.real() << " " << toy_case.n_slab.imag() << " "
             << toy_case.d_slab_nm << " "
             << toy_case.n_out.real() << " " << toy_case.n_out.imag() << " "
-            << safe_real_or_nan(rt.r) << " " << safe_imag_or_nan(rt.r) << " "
-            << safe_real_or_nan(rt.t) << " " << safe_imag_or_nan(rt.t) << " "
-            << rt.R << " " << rt.T << " " << A_front << "\n";
+            << safe_real_or_nan(tmm_debug.beta) << " " << safe_imag_or_nan(tmm_debug.beta) << " "
+            << safe_real_or_nan(tmm_debug.exp_i_beta) << " " << safe_imag_or_nan(tmm_debug.exp_i_beta) << " "
+            << safe_real_or_nan(tmm_debug.exp_2i_beta) << " " << safe_imag_or_nan(tmm_debug.exp_2i_beta) << " "
+            << safe_real_or_nan(tmm_debug.m11) << " " << safe_imag_or_nan(tmm_debug.m11) << " "
+            << safe_real_or_nan(tmm_debug.m12) << " " << safe_imag_or_nan(tmm_debug.m12) << " "
+            << safe_real_or_nan(tmm_debug.m21) << " " << safe_imag_or_nan(tmm_debug.m21) << " "
+            << safe_real_or_nan(tmm_debug.m22) << " " << safe_imag_or_nan(tmm_debug.m22) << " "
+            << rt_tmm.R << " " << rt_tmm.T << " " << A_tmm << " "
+            << rt_analytic.R << " " << rt_analytic.T << " " << A_analytic << " "
+            << dR << " " << dT << " " << dA << " "
+            << safe_real_or_nan(rt_tmm.r) << " " << safe_imag_or_nan(rt_tmm.r) << " "
+            << safe_real_or_nan(rt_tmm.t) << " " << safe_imag_or_nan(rt_tmm.t) << " "
+            << safe_real_or_nan(rt_analytic.r) << " " << safe_imag_or_nan(rt_analytic.r) << " "
+            << safe_real_or_nan(rt_analytic.t) << " " << safe_imag_or_nan(rt_analytic.t) << "\n";
 
-        if (violates_passivity(rt.R, rt.T, A_front)) {
+        if (tmm_failed || analytic_failed) {
             any_failure = true;
-            std::cerr << "[WARN] Toy case failed passivity check: " << toy_case.label
-                      << " lambda_nm=" << toy_case.wavelength_nm
-                      << " R=" << rt.R
-                      << " T=" << rt.T
-                      << " A_front=" << A_front
+            std::cerr << "[WARN] " << toy_case.label << ": "
+                      << (tmm_failed ? "TMM failed" : "TMM passed") << ", "
+                      << (analytic_failed ? "analytic failed" : "analytic passed")
+                      << " | TMM(R=" << rt_tmm.R << ", T=" << rt_tmm.T << ", A=" << A_tmm << ")"
+                      << " | analytic(R=" << rt_analytic.R << ", T=" << rt_analytic.T << ", A=" << A_analytic << ")"
                       << std::endl;
         } else {
-            std::cerr << "[INFO] Toy case passed: " << toy_case.label
-                      << " R=" << rt.R
-                      << " T=" << rt.T
-                      << " A_front=" << A_front
+            std::cerr << "[INFO] " << toy_case.label << ": TMM passed, analytic passed"
+                      << " | TMM(R=" << rt_tmm.R << ", T=" << rt_tmm.T << ", A=" << A_tmm << ")"
+                      << " | analytic(R=" << rt_analytic.R << ", T=" << rt_analytic.T << ", A=" << A_analytic << ")"
                       << std::endl;
         }
     }
