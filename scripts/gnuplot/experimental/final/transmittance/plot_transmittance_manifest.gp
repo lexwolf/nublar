@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900
+set terminal pngcairo size 1400,900 noenhanced
 set output "/home/alessandro/GitHub/Academia/nublar/img/experimental/final/transmittance/transmittance_manifest.png"
 
 set title "Processed transmittance spectra (transmittance_manifest)"

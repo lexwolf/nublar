@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900 enhanced
+set terminal pngcairo size 1400,900 noenhanced
 set output 'img/output/effe_proxy/effe_proxy_comparison.png'
 
 set title 'Candidate effe proxies vs deposition time'

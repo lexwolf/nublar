@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900 enhanced
+set terminal pngcairo size 1400,900 noenhanced
 set output 'img/output/Rave_proxy/Rave_proxy_comparison.png'
 
 set title 'Candidate Rave proxies vs deposition time'

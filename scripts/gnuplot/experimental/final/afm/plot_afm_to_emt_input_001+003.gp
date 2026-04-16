@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900
+set terminal pngcairo size 1400,900 noenhanced
 set output "img/experimental/final/afm/afm_to_emt_input_001+003.png"
 
 set multiplot layout 2,2 rowsfirst title "AFM -> EMT inputs (001+003)"

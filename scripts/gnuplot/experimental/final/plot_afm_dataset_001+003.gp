@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900
+set terminal pngcairo size 1400,900 noenhanced
 set output "img/experimental/final/afm_dataset_001+003.png"
 
 set multiplot layout 2,2 rowsfirst title "AFM morphology vs deposition time (001+003)"

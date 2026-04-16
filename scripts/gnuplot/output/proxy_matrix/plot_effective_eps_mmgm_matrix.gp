@@ -1,4 +1,4 @@
-set terminal pngcairo size 2200,3600
+set terminal pngcairo size 2200,3600 noenhanced
 set output 'img/output/proxy_matrix/effective_eps_mmgm_matrix.png'
 set multiplot layout 8,4 rowsfirst title 'Effective Permittivity Matrix (Extended Mie Maxwell-Garnett)'
 set datafile commentschars "#"

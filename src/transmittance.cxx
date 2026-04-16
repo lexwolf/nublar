@@ -58,6 +58,18 @@ struct RtCoefficients {
     double T;
 };
 
+double forward_power_flux(const std::complex<double>& n_medium,
+                          const std::complex<double>& e_forward);
+
+struct ToyCase {
+    std::string label;
+    double wavelength_nm;
+    std::complex<double> n_in;
+    std::complex<double> n_slab;
+    double d_slab_nm;
+    std::complex<double> n_out;
+};
+
 std::filesystem::path output_path_for_time(const std::string& project_root, int time_s)
 {
     return std::filesystem::path(project_root)
@@ -77,7 +89,17 @@ double safe_imag_or_nan(const std::complex<double>& z)
 
 std::complex<double> principal_refractive_index(const std::complex<double>& eps)
 {
-    std::complex<double> n = std::sqrt(eps);
+    constexpr double kImagEpsTolerance = 1e-8;
+
+    // Spline/interpolation noise can produce tiny negative Im(eps) values for
+    // weakly absorbing dielectrics. Clamp those to the lossless limit before
+    // taking the square root so the passive branch remains physically stable.
+    std::complex<double> eps_sanitized = eps;
+    if (eps_sanitized.imag() < 0.0 && std::abs(eps_sanitized.imag()) <= kImagEpsTolerance) {
+        eps_sanitized = {eps_sanitized.real(), 0.0};
+    }
+
+    std::complex<double> n = std::sqrt(eps_sanitized);
 
     // Choose the passive branch with non-negative extinction coefficient.
     if (n.imag() < 0.0) {
@@ -100,9 +122,20 @@ RtCoefficients interface_rt(const std::complex<double>& n_left,
     const std::complex<double> t = (2.0 * n_left) / denom;
 
     const double R = std::norm(r);
-    const double T = (std::real(n_right) / std::real(n_left)) * std::norm(t);
+    const double incident_flux = forward_power_flux(n_left, std::complex<double>(1.0, 0.0));
+    const double transmitted_flux = forward_power_flux(n_right, t);
+    const double T = (incident_flux > 0.0)
+        ? (transmitted_flux / incident_flux)
+        : std::numeric_limits<double>::quiet_NaN();
 
     return {r, t, R, T};
+}
+
+double forward_power_flux(const std::complex<double>& n_medium,
+                          const std::complex<double>& e_forward)
+{
+    const std::complex<double> h_forward = n_medium * e_forward;
+    return std::real(e_forward * std::conj(h_forward));
 }
 
 RtCoefficients coherent_stack_rt(const std::complex<double>& n_in,
@@ -144,7 +177,11 @@ RtCoefficients coherent_stack_rt(const std::complex<double>& n_in,
     const cd t = (2.0 * n_in) / denom;
 
     const double R = std::norm(r);
-    const double T = (std::real(n_out) / std::real(n_in)) * std::norm(t);
+    const double incident_flux = forward_power_flux(n_in, cd(1.0, 0.0));
+    const double transmitted_flux = forward_power_flux(n_out, t);
+    const double T = (incident_flux > 0.0)
+        ? (transmitted_flux / incident_flux)
+        : std::numeric_limits<double>::quiet_NaN();
 
     return {r, t, R, T};
 }
@@ -154,11 +191,100 @@ std::vector<Layer> reversed_layers(const std::vector<Layer>& layers)
     return std::vector<Layer>(layers.rbegin(), layers.rend());
 }
 
+std::filesystem::path toy_output_path(const std::string& project_root)
+{
+    return std::filesystem::path(project_root)
+           / "data/output/transmittance"
+           / "toy_front_stack_diagnostic.dat";
+}
+
 double beer_attenuation_factor(const std::complex<double>& n_glass, double wavelength_nm, double thickness_nm)
 {
     const double kappa = std::max(0.0, n_glass.imag());
     const double alpha_nm_inv = 4.0 * kPi * kappa / wavelength_nm;
     return std::exp(-alpha_nm_inv * thickness_nm);
+}
+
+bool violates_passivity(double R, double T, double A)
+{
+    constexpr double kTol = 1e-9;
+    return R < -kTol || T < -kTol || T > 1.0 + kTol || A < -kTol;
+}
+
+int run_toy_front_stack_diagnostic(const std::string& project_root)
+{
+    const std::vector<ToyCase> toy_cases = {
+        {
+            "ToyCaseA_weak_absorbing_dielectric",
+            500.0,
+            {1.0, 0.0},
+            {1.5, 0.01},
+            50.0,
+            {1.5, 0.0},
+        },
+        {
+            "ToyCaseB_absorbing_metal_like",
+            500.0,
+            {1.0, 0.0},
+            {0.3, 2.0},
+            20.0,
+            {1.5, 0.0},
+        },
+    };
+
+    const std::filesystem::path output_path = toy_output_path(project_root);
+    std::filesystem::create_directories(output_path.parent_path());
+
+    std::ofstream out(output_path);
+    if (!out.is_open()) {
+        throw std::runtime_error("Could not open toy diagnostic file: " + output_path.string());
+    }
+
+    out << "# Toy front-stack diagnostic using coherent_stack_rt()\n";
+    out << "# columns: case_label lambda_nm "
+        << "n_in_re n_in_im n_slab_re n_slab_im d_slab_nm n_out_re n_out_im "
+        << "r_re r_im t_re t_im R T A_front\n";
+    out << std::fixed << std::setprecision(10);
+
+    bool any_failure = false;
+    for (const ToyCase& toy_case : toy_cases) {
+        const std::vector<Layer> layers = {
+            {toy_case.n_slab * toy_case.n_slab, toy_case.d_slab_nm},
+        };
+
+        const RtCoefficients rt = coherent_stack_rt(
+            toy_case.n_in, layers, toy_case.n_out, toy_case.wavelength_nm);
+        const double A_front = 1.0 - rt.R - rt.T;
+
+        out << toy_case.label << " "
+            << toy_case.wavelength_nm << " "
+            << toy_case.n_in.real() << " " << toy_case.n_in.imag() << " "
+            << toy_case.n_slab.real() << " " << toy_case.n_slab.imag() << " "
+            << toy_case.d_slab_nm << " "
+            << toy_case.n_out.real() << " " << toy_case.n_out.imag() << " "
+            << safe_real_or_nan(rt.r) << " " << safe_imag_or_nan(rt.r) << " "
+            << safe_real_or_nan(rt.t) << " " << safe_imag_or_nan(rt.t) << " "
+            << rt.R << " " << rt.T << " " << A_front << "\n";
+
+        if (violates_passivity(rt.R, rt.T, A_front)) {
+            any_failure = true;
+            std::cerr << "[WARN] Toy case failed passivity check: " << toy_case.label
+                      << " lambda_nm=" << toy_case.wavelength_nm
+                      << " R=" << rt.R
+                      << " T=" << rt.T
+                      << " A_front=" << A_front
+                      << std::endl;
+        } else {
+            std::cerr << "[INFO] Toy case passed: " << toy_case.label
+                      << " R=" << rt.R
+                      << " T=" << rt.T
+                      << " A_front=" << A_front
+                      << std::endl;
+        }
+    }
+
+    std::cout << output_path << "\n";
+    return any_failure ? 2 : 0;
 }
 
 void write_spectrum(const std::string& project_root,
@@ -169,7 +295,9 @@ void write_spectrum(const std::string& project_root,
                     const nublar::OmegaRange& omega_range,
                     double ito_thickness_nm,
                     double glass_thickness_nm,
-                    bool include_incoherent_multiples)
+                    bool include_incoherent_multiples,
+                    double eta,
+                    double xi)
 {
     const std::filesystem::path output_path = output_path_for_time(project_root, row.time_s);
     std::filesystem::create_directories(output_path.parent_path());
@@ -181,8 +309,11 @@ void write_spectrum(const std::string& project_root,
 
     out << "# time_s " << row.time_s << "\n";
     out << "# effe " << std::setprecision(16) << row.effe << "\n";
+    out << "# effe_scaled " << (xi * row.effe) << "\n";
     out << "# Rave_nm " << row.rave_nm << "\n";
     out << "# effective_thickness_nm " << row.thickness_nm << "\n";
+    out << "# eta " << eta << "\n";
+    out << "# xi " << xi << "\n";
     out << "# ito_thickness_nm " << ito_thickness_nm << "\n";
     out << "# glass_thickness_nm " << glass_thickness_nm << "\n";
     out << "# distribution two_lognormal "
@@ -194,7 +325,7 @@ void write_spectrum(const std::string& project_root,
         << (include_incoherent_multiples ? 1 : 0) << "\n";
     out << "# columns: lambda_nm omega_eV "
         << "T_total T_front T_back A_glass R_front_air R_front_glass R_back "
-        << "eps_eff_re eps_eff_im eps_ito_re eps_ito_im eps_glass_re eps_glass_im\n";
+        << "eps_eff_re eps_eff_im eps_ito_re eps_ito_im eps_glass_re eps_glass_im A_front\n";
 
     out << std::fixed << std::setprecision(10);
 
@@ -214,8 +345,9 @@ void write_spectrum(const std::string& project_root,
         }
 
         const std::complex<double> eps_metal = metal_sphere.metal(omega_ev);
+        const double effe_scaled = xi * row.effe;
         const std::complex<double> eps_eff = nublar::mmgm_effective_permittivity(
-            row.rave_nm, eps_metal, host_eps, wavelength_nm, row.effe, row);
+            row.rave_nm, eps_metal, host_eps, wavelength_nm, effe_scaled, row);
 
         dielectric_sphere.set_dielectric("ito", "spline", "unical");
         const std::complex<double> eps_ito = dielectric_sphere.dielectric(omega_ev);
@@ -225,9 +357,10 @@ void write_spectrum(const std::string& project_root,
 
         const std::complex<double> n_air = principal_refractive_index(std::complex<double>(host_eps, 0.0));
         const std::complex<double> n_glass = principal_refractive_index(eps_glass);
+        const double d_eff_nm = eta * row.thickness_nm;
 
         const std::vector<Layer> front_layers = {
-            {eps_eff, row.thickness_nm},
+            {eps_eff, d_eff_nm},
             {eps_ito, ito_thickness_nm}
         };
 
@@ -240,6 +373,7 @@ void write_spectrum(const std::string& project_root,
         const RtCoefficients back_interface = interface_rt(n_glass, n_air);
 
         const double A_glass = beer_attenuation_factor(n_glass, wavelength_nm, glass_thickness_nm);
+        const double A_front = 1.0 - front_from_air.R - front_from_air.T;
 
         double T_total = front_from_air.T * A_glass * back_interface.T;
         if (include_incoherent_multiples) {
@@ -262,7 +396,8 @@ void write_spectrum(const std::string& project_root,
             << back_interface.R << " "
             << safe_real_or_nan(eps_eff) << " " << safe_imag_or_nan(eps_eff) << " "
             << safe_real_or_nan(eps_ito) << " " << safe_imag_or_nan(eps_ito) << " "
-            << safe_real_or_nan(eps_glass) << " " << safe_imag_or_nan(eps_glass) << "\n";
+            << safe_real_or_nan(eps_glass) << " " << safe_imag_or_nan(eps_glass) << " "
+            << A_front << "\n";
     }
 
     std::cout << output_path << "\n";
@@ -274,6 +409,9 @@ int main(int argc, char* argv[])
 {
     try {
         const std::string project_root = nublar::resolve_project_root(argv[0]);
+        if (argc >= 2 && std::string(argv[1]) == "--toy") {
+            return run_toy_front_stack_diagnostic(project_root);
+        }
         const std::filesystem::path manifest_path = (argc >= 2)
             ? std::filesystem::path(argv[1])
             : std::filesystem::path(project_root) / "data/input/experimental/model_input.dat";
@@ -282,9 +420,22 @@ int main(int argc, char* argv[])
         // argv[2] = ITO thickness in nm          (default 0.0)
         // argv[3] = glass thickness in nm        (default 1.1e6 nm = 1.1 mm)
         // argv[4] = include incoherent multiples (default 1)
+        // argv[5] = nanoisland effective thickness scaling eta (default 1.0)
+        // argv[6] = effective filling fraction scaling xi (default 1.0)
         const double ito_thickness_nm = (argc >= 3) ? std::stod(argv[2]) : 0.0;
         const double glass_thickness_nm = (argc >= 4) ? std::stod(argv[3]) : 1.1e6;
         const bool include_incoherent_multiples = (argc >= 5) ? (std::stoi(argv[4]) != 0) : true;
+        double eta = 1.0;
+        if (argc > 5) {
+            eta = std::stod(argv[5]);
+        }
+        double xi = 1.0;
+        if (argc > 6) {
+            xi = std::stod(argv[6]);
+        }
+
+        std::cerr << "[INFO] Using thickness scaling eta = " << eta << std::endl;
+        std::cerr << "[INFO] Using filling-fraction scaling xi = " << xi << std::endl;
 
         std::vector<nublar::ExperimentalRow> rows = nublar::read_manifest(manifest_path);
 
@@ -324,7 +475,9 @@ int main(int argc, char* argv[])
                            omega_range,
                            ito_thickness_nm,
                            glass_thickness_nm,
-                           include_incoherent_multiples);
+                           include_incoherent_multiples,
+                           eta,
+                           xi);
         }
 
         return 0;

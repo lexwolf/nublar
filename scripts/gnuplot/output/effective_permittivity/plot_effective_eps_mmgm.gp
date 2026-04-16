@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900
+set terminal pngcairo size 1400,900 noenhanced
 set output "img/output/effective_permittivity/effective_eps_mmgm.png"
 
 set multiplot layout 2,1 title "Silver Nanoisland Effective Permittivity (Extended Mie Maxwell-Garnett)"

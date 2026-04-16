@@ -1,4 +1,4 @@
-set terminal pngcairo size 1200,800 enhanced font "Helvetica,14"
+set terminal pngcairo size 1200,800 noenhanced font "Helvetica,14"
 set output "img/output/sweep_f/comparison.png"
 
 set multiplot layout 2,2 title "Effective permittivity vs deposition"

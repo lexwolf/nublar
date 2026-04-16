@@ -1,6 +1,6 @@
 reset
 
-set terminal pngcairo size 1200,800 enhanced font "Helvetica,14"
+set terminal pngcairo size 1200,800 noenhanced font "Helvetica,14"
 set output "img/experimental/final/check_NR2_vs_coverage.png"
 
 set multiplot layout 2,1 title "Consistency check: coverage vs N R^2"

@@ -1,4 +1,4 @@
-set terminal pngcairo size 1400,900
+set terminal pngcairo size 1400,900 noenhanced
 set output "/home/alessandro/GitHub/Academia/nublar/img/experimental/input/transmittance_common_range.png"
 
 set title "Silver nanoisland transmittance spectra"
