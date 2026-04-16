@@ -64,6 +64,7 @@ This uses:
 - the complex silver permittivity `eps_metal(omega)`
 - the host permittivity `eps_host` (air in the current code)
 - a morphology-derived effective filling factor `effe`
+- an optional filling-fraction scaling parameter `xi`
 - an average radius proxy `Rave_nm`
 - a **two-lognormal radius distribution**
 
@@ -101,6 +102,7 @@ In practice:
 - `effe` is the morphology proxy chosen upstream in `build_experimental_input.py`
 - it controls how strongly the nanoisland layer perturbs the host medium
 - it is not a direct microscopic packing simulation; it is an effective parameter
+- the solver can additionally apply `effe_scaled = xi * effe` as a controlled test scaling
 
 ## 4. Optical Subproblems
 
@@ -132,13 +134,14 @@ For each layer:
 - `delta = (2 pi / lambda) * n_layer * thickness`
 - the layer matrix is built from `cos(delta)` and `sin(delta)`
 - matrices are multiplied through the stack
+- the current implementation uses the repaired sign convention in the off-diagonal slab terms, i.e. the characteristic matrix is consistent with the validated one-layer analytic slab formula used in toy mode
 
 The code then extracts:
 
 - amplitude reflection `r`
 - amplitude transmission `t`
 - intensity reflectance `R = |r|^2`
-- intensity transmittance `T = (Re(n_out)/Re(n_in)) |t|^2`
+- intensity transmittance `T` from the forward Poynting-flux ratio between transmitted and incident forward waves
 
 Two coherent calculations are done:
 
@@ -163,6 +166,26 @@ This gives:
 - `T_back`
 
 These are intensity coefficients for the single interface only.
+
+## 4.5 Validation and Diagnostics
+
+The coherent optics core was explicitly validated against passive toy stacks using:
+
+- the built-in toy mode `./bin/transmittance --toy`
+- an independent analytic one-layer slab formula
+
+The purpose of that diagnostic was to test whether the transfer-matrix machinery itself was internally passive before attributing problems to MMGM or morphology inputs.
+
+Two passive toy cases were used:
+
+- a weakly absorbing dielectric slab
+- a strongly absorbing but still passive metal-like slab
+
+The repaired coherent stack now reproduces the analytic one-layer results for those toy cases and satisfies passivity there. The relevant notes are:
+
+- [transmittance_toy_mode_report.md](/home/alessandro/GitHub/Academia/nublar/doc/transmittance_toy_mode_report.md)
+- [transmittance_single_slab_crosscheck_report.md](/home/alessandro/GitHub/Academia/nublar/doc/transmittance_single_slab_crosscheck_report.md)
+- [transmittance_one_layer_tmm_repair_report.md](/home/alessandro/GitHub/Academia/nublar/doc/transmittance_one_layer_tmm_repair_report.md)
 
 ## 4.4 Glass Propagation
 
@@ -241,6 +264,7 @@ lambda_nm omega_eV
 T_total T_front T_back A_glass
 R_front_air R_front_glass R_back
 eps_eff_re eps_eff_im eps_ito_re eps_ito_im eps_glass_re eps_glass_im
+A_front
 ```
 
 Below is the physical meaning of each one.
@@ -250,11 +274,17 @@ Below is the physical meaning of each one.
 - `time_s`
   - Deposition-time label of the sample.
 - `effe`
-  - Effective morphology proxy actually used in the MMGM calculation.
+  - Morphology proxy from the manifest before any optional solver-side scaling.
+- `effe_scaled`
+  - Effective morphology proxy actually used in the MMGM calculation after applying `xi`.
 - `Rave_nm`
   - Radius proxy used as the average radius in the MMGM closure.
 - `effective_thickness_nm`
-  - Thickness assigned to the effective nanoisland layer in the coherent stack.
+  - Baseline thickness assigned to the effective nanoisland layer before any optional solver-side scaling.
+- `eta`
+  - Thickness scaling factor applied only to the effective nanoisland layer, so the coherent stack uses `d_eff = eta * effective_thickness_nm`.
+- `xi`
+  - Filling-fraction scaling factor applied only to the nanoisland effective-medium parameter, so the MMGM call uses `effe_scaled = xi * effe`.
 - `ito_thickness_nm`
   - Thickness of the ITO layer used in the calculation.
 - `glass_thickness_nm`
@@ -294,6 +324,11 @@ Below is the physical meaning of each one.
   - **Beer-Lambert intensity attenuation through the glass substrate.**
   - If glass absorption is negligible, this stays close to 1.
   - This does not include reflections, only propagation loss.
+
+- `A_front`
+  - **Front-stack absorption / passivity diagnostic**, defined as `A_front = 1 - R_front_air - T_front`.
+  - For a passive coherent front stack this should be non-negative up to numerical tolerance.
+  - It is useful when debugging whether an apparent front-stack feature is physical or caused by a convention / implementation problem.
 
 ### 7.4 Reflectance Terms
 
@@ -350,6 +385,9 @@ The most useful way to read the output columns is:
 - `eps_eff_*`
   - How the morphology-driven nanoisland effective medium is behaving spectrally.
 
+- `A_front`
+  - Whether the coherent front stack is locally behaving like a passive system.
+
 ## 9. Assumptions and Limitations
 
 This is a useful first broadband model, but it makes important assumptions:
@@ -359,6 +397,9 @@ This is a useful first broadband model, but it makes important assumptions:
 - The substrate is modeled as a single homogeneous glass slab.
 - The host medium for the effective-medium calculation is air.
 - The morphology enters through `effe`, `Rave_nm`, and the two-lognormal size distribution, rather than through a full spatial electromagnetic simulation.
+- The solver also supports controlled test scalings:
+  - `eta` for the effective nanoisland thickness only
+  - `xi` for the effective filling fraction only
 
 So the solver is best interpreted as:
 
@@ -375,6 +416,7 @@ So the solver is best interpreted as:
 - `R_front_air` -> reflectance of the front stack seen from air
 - `R_front_glass` -> reflectance of the front stack seen from glass
 - `R_back` -> reflectance of the `glass -> air` back interface
+- `A_front` -> front-stack absorption / passivity diagnostic
 - `eps_eff_*` -> effective permittivity of the nanoisland layer
 - `eps_ito_*` -> ITO permittivity
 - `eps_glass_*` -> glass permittivity
