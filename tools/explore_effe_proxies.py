@@ -414,7 +414,7 @@ def write_gnuplot_script(
             f"    '{dat_path.as_posix()}' using 1:{column} with linespoints lw 2 pt 7 title '{result.name}'"
         )
 
-    script = f"""set terminal pngcairo size 1400,900 enhanced
+    script = f"""set terminal pngcairo noenhanced size 1400,900
 set output '{png_path.as_posix()}'
 
 set title 'Candidate effe proxies vs deposition time'

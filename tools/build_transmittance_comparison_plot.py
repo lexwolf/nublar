@@ -106,7 +106,7 @@ def parse_manifest(path: Path) -> list[ManifestRow]:
     return rows
 
 
-GNUPLOT_TEMPLATE = """set terminal pngcairo size 1800,900
+GNUPLOT_TEMPLATE = """set terminal pngcairo noenhanced size 1800,900
 set output "{png_path}"
 
 common_lamin = {common_lamin}

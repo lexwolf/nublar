@@ -1,15 +1,26 @@
 # Compiled binaries
-bin/*
+bin/
 
-# Build directories
+# Build directories / build-system metadata
 build/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
 
 # Object files / build junk
 *.o
+*.obj
 *.out
 *.a
 *.so
+*.dylib
+*.dll
+*.exe
 *.dSYM/
+*.gcno
+*.gcda
+*.profraw
+*.profdata
 
 # Python cache
 __pycache__/
@@ -17,6 +28,17 @@ __pycache__/
 
 # Generated numerical outputs
 data/output/
+
+# Generated manifests
+data/input/experimental/model_input.csv
+data/input/experimental/model_input.dat
+
+# Generated plots / images
+img/output/
+img/comparisons/transmittance/
+
+# Generated gnuplot scripts
+scripts/gnuplot/output/
 
 # Editor / OS noise
 *~

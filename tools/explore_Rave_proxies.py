@@ -196,7 +196,7 @@ def write_gnuplot_script(path: Path, dat_path: Path, png_path: Path) -> None:
         f"    '{dat_path.as_posix()}' using 1:{idx + 2} with linespoints lw 2 pt 7 title '{name}'"
         for idx, name in enumerate(RADIUS_PROXY_CHOICES)
     ]
-    script = f"""set terminal pngcairo size 1400,900 enhanced
+    script = f"""set terminal pngcairo noenhanced size 1400,900
 set output '{png_path.as_posix()}'
 
 set title 'Candidate Rave proxies vs deposition time'
