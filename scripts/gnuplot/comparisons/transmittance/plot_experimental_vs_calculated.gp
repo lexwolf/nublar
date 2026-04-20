@@ -1,4 +1,4 @@
-set terminal pngcairo size 1800,900
+set terminal pngcairo noenhanced size 1800,900
 set output "/home/alessandro/GitHub/Academia/nublar/img/comparisons/transmittance/experimental_vs_calculated.png"
 
 common_lamin = 300
