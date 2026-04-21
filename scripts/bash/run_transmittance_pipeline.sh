@@ -18,6 +18,7 @@ INCLUDE_INCOHERENT_MULTIPLES="1"
 ETA="1.0"
 XI="1.0"
 EFFECTIVE_MEDIUM_MODEL="mmgm"
+GEOMETRY="spheres"
 
 usage() {
   cat <<EOF
@@ -68,6 +69,10 @@ Options:
       Effective-medium model passed to bin/transmittance and the common-range manifest builder
       Options: mg, bruggeman, mmgm
       Default: $EFFECTIVE_MEDIUM_MODEL
+  --geometry VALUE
+      Morphology convention passed to bin/transmittance and the common-range manifest builder
+      Options: spheres, holes
+      Default: $GEOMETRY
   -h, --help
       Show this help message
 EOF
@@ -131,6 +136,10 @@ while [[ $# -gt 0 ]]; do
       EFFECTIVE_MEDIUM_MODEL="$2"
       shift 2
       ;;
+    --geometry)
+      GEOMETRY="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -153,15 +162,25 @@ case "$EFFECTIVE_MEDIUM_MODEL" in
     ;;
 esac
 
-if [[ "$EFFECTIVE_MEDIUM_MODEL" != "mmgm" ]]; then
+case "$GEOMETRY" in
+  spheres|holes)
+    ;;
+  *)
+    echo "Invalid geometry: $GEOMETRY" >&2
+    echo "Options are: spheres, holes" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$EFFECTIVE_MEDIUM_MODEL" != "mmgm" || "$GEOMETRY" != "spheres" ]]; then
   if [[ "$COMMON_DATASET" == "data/output/transmittance/common_transmittance_manifest.dat" ]]; then
-    COMMON_DATASET="data/output/transmittance/common_transmittance_manifest__em=${EFFECTIVE_MEDIUM_MODEL}.dat"
+    COMMON_DATASET="data/output/transmittance/common_transmittance_manifest__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}.dat"
   fi
   if [[ "$PLOT_SCRIPT" == "scripts/gnuplot/comparisons/transmittance/plot_experimental_vs_calculated.gp" ]]; then
-    PLOT_SCRIPT="scripts/gnuplot/comparisons/transmittance/plot_experimental_vs_calculated__em=${EFFECTIVE_MEDIUM_MODEL}.gp"
+    PLOT_SCRIPT="scripts/gnuplot/comparisons/transmittance/plot_experimental_vs_calculated__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}.gp"
   fi
   if [[ "$PLOT_PNG" == "img/comparisons/transmittance/experimental_vs_calculated.png" ]]; then
-    PLOT_PNG="img/comparisons/transmittance/experimental_vs_calculated__em=${EFFECTIVE_MEDIUM_MODEL}.png"
+    PLOT_PNG="img/comparisons/transmittance/experimental_vs_calculated__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}.png"
   fi
 fi
 
@@ -177,6 +196,7 @@ echo "==> Building common-range transmittance dataset"
 python3 tools/build_common_transmittance_dataset.py \
   --model-input "$MODEL_INPUT" \
   --effective-medium-model "$EFFECTIVE_MEDIUM_MODEL" \
+  --geometry "$GEOMETRY" \
   --outdir "$(dirname "$COMMON_DATASET")" \
   --basename "$(basename "${COMMON_DATASET%.*}")"
 
@@ -188,6 +208,7 @@ fi
 echo "==> Running transmittance solver"
 ./bin/transmittance \
   --effective-medium-model "$EFFECTIVE_MEDIUM_MODEL" \
+  --geometry "$GEOMETRY" \
   "$MODEL_INPUT" \
   "$ITO_THICKNESS_NM" \
   "$GLASS_THICKNESS_NM" \
@@ -210,5 +231,6 @@ echo "  thickness proxy: $THICKNESS_PROXY"
 echo "  eta:             $ETA"
 echo "  xi:              $XI"
 echo "  em model:        $EFFECTIVE_MEDIUM_MODEL"
+echo "  geometry:        $GEOMETRY"
 echo "  gnuplot script:  $PLOT_SCRIPT"
 echo "  plot target:     $PLOT_PNG"

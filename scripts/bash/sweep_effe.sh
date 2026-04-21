@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 EFFECTIVE_MEDIUM_MODEL="mg"
+GEOMETRY="spheres"
 COMPILE=0
 MODEL_INPUT="data/input/experimental/model_input.dat"
 ITO_THICKNESS_NM="0.0"
@@ -44,6 +45,10 @@ Options:
   --model-input PATH
       Solver manifest path passed to bin/transmittance
       Default: $MODEL_INPUT
+  --geometry VALUE
+      Morphology convention passed to bin/transmittance
+      Options: spheres, holes
+      Default: $GEOMETRY
   --ito-thickness-nm VALUE
       Optional transmittance binary override
       Default: $ITO_THICKNESS_NM
@@ -77,6 +82,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --model-input)
       MODEL_INPUT="$2"
+      shift 2
+      ;;
+    --geometry)
+      GEOMETRY="$2"
       shift 2
       ;;
     --ito-thickness-nm)
@@ -129,6 +138,16 @@ case "$EFFECTIVE_MEDIUM_MODEL" in
     ;;
 esac
 
+case "$GEOMETRY" in
+  spheres|holes)
+    ;;
+  *)
+    echo "Invalid geometry for effe sweep: $GEOMETRY" >&2
+    echo "Options are: spheres, holes" >&2
+    exit 1
+    ;;
+esac
+
 if [[ -z "$OVERRIDE_THICKNESS_NM" ]]; then
   echo "--override-thickness-nm is required for sweep_effe.sh" >&2
   exit 1
@@ -139,10 +158,10 @@ if [[ $COMPILE -eq 1 || ! -x bin/transmittance ]]; then
   make bin/transmittance
 fi
 
-SWEEP_DIR="$OUTROOT/model=${EFFECTIVE_MEDIUM_MODEL}"
+SWEEP_DIR="$OUTROOT/model=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}"
 MANIFEST_PATH="$SWEEP_DIR/sweep_manifest.dat"
-GP_PATH="$GP_OUT_DIR/plot_transmittance_vs_effe__em=${EFFECTIVE_MEDIUM_MODEL}.gp"
-PNG_PATH="$IMG_OUT_DIR/transmittance_vs_effe__em=${EFFECTIVE_MEDIUM_MODEL}.png"
+GP_PATH="$GP_OUT_DIR/plot_transmittance_vs_effe__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}.gp"
+PNG_PATH="$IMG_OUT_DIR/transmittance_vs_effe__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}.png"
 TEMP_MANIFEST="$SWEEP_DIR/model_input_single_row.dat"
 mkdir -p "$SWEEP_DIR"
 mkdir -p "$GP_OUT_DIR" "$IMG_OUT_DIR"
@@ -180,6 +199,7 @@ for effe in "${EFFE_VALUES[@]}"; do
 
   ./bin/transmittance \
     --effective-medium-model "$EFFECTIVE_MEDIUM_MODEL" \
+    --geometry "$GEOMETRY" \
     --override-effe "$effe" \
     --override-thickness-nm "$OVERRIDE_THICKNESS_NM" \
     "$TEMP_MANIFEST" \
@@ -190,10 +210,10 @@ for effe in "${EFFE_VALUES[@]}"; do
 
   case "$EFFECTIVE_MEDIUM_MODEL" in
     mg)
-      src_file="$(find data/output/transmittance -maxdepth 1 -type f -name 'silver_nanoisland_*s__em=mg.dat' | sort | head -n 1)"
+      src_file="$(find data/output/transmittance -maxdepth 1 -type f -name "silver_nanoisland_*s__em=mg__geom=${GEOMETRY}.dat" | sort | head -n 1)"
       ;;
     bruggeman)
-      src_file="$(find data/output/transmittance -maxdepth 1 -type f -name 'silver_nanoisland_*s__em=bruggeman.dat' | sort | head -n 1)"
+      src_file="$(find data/output/transmittance -maxdepth 1 -type f -name "silver_nanoisland_*s__em=bruggeman__geom=${GEOMETRY}.dat" | sort | head -n 1)"
       ;;
   esac
 
@@ -202,7 +222,7 @@ for effe in "${EFFE_VALUES[@]}"; do
     exit 1
   fi
 
-  dst_file="$SWEEP_DIR/transmittance__em=${EFFECTIVE_MEDIUM_MODEL}__effe=${effe}.dat"
+  dst_file="$SWEEP_DIR/transmittance__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}__effe=${effe}.dat"
   cp "$src_file" "$dst_file"
 
   echo "$effe $dst_file" >> "$MANIFEST_PATH"
@@ -211,7 +231,7 @@ done
 {
   echo "set terminal pngcairo noenhanced size 1400,900"
   echo "set output '$PNG_PATH'"
-  echo "set title 'Transmittance sweep vs effe (${EFFECTIVE_MEDIUM_MODEL}, d=${OVERRIDE_THICKNESS_NM} nm)'"
+  echo "set title 'Transmittance sweep vs effe (${EFFECTIVE_MEDIUM_MODEL}, ${GEOMETRY}, d=${OVERRIDE_THICKNESS_NM} nm)'"
   echo "set datafile commentschars '#'"
   echo "set grid"
   echo "set xrange [300:798]"
@@ -222,7 +242,7 @@ done
   echo "plot \\"
   for idx in "${!EFFE_VALUES[@]}"; do
     effe="${EFFE_VALUES[$idx]}"
-    data_file="$SWEEP_DIR/transmittance__em=${EFFECTIVE_MEDIUM_MODEL}__effe=${effe}.dat"
+    data_file="$SWEEP_DIR/transmittance__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}__effe=${effe}.dat"
     suffix=", \\"
     if [[ $idx -eq $((${#EFFE_VALUES[@]} - 1)) ]]; then
       suffix=""
@@ -236,6 +256,7 @@ gnuplot "$GP_PATH"
 echo
 echo "Effe sweep complete."
 echo "  model:          $EFFECTIVE_MEDIUM_MODEL"
+echo "  geometry:       $GEOMETRY"
 echo "  model input:    $MODEL_INPUT"
 echo "  single manifest:$TEMP_MANIFEST"
 echo "  thickness (nm): $OVERRIDE_THICKNESS_NM"

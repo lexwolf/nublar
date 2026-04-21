@@ -85,8 +85,22 @@ enum class EffectiveMediumModel {
     Mmgm,
 };
 
+enum class EffectiveMediumGeometry {
+    Spheres,
+    Holes,
+};
+
+struct EffectiveMediumMorphology {
+    std::complex<double> inclusion_eps;
+    std::complex<double> host_eps;
+    double inclusion_fraction = 0.0;
+};
+
 struct EffectiveMediumState {
     std::optional<std::complex<double>> previous_bruggeman_eps_eff;
+    std::optional<std::complex<double>> validation_previous_bruggeman_spheres_eps_eff;
+    std::optional<std::complex<double>> validation_previous_bruggeman_holes_eps_eff;
+    double max_bruggeman_geometry_difference = 0.0;
 };
 
 EffectiveMediumModel parse_effective_medium_model(const std::string& value)
@@ -106,6 +120,20 @@ EffectiveMediumModel parse_effective_medium_model(const std::string& value)
         + "'. Options are: mg, bruggeman, mmgm.");
 }
 
+EffectiveMediumGeometry parse_effective_medium_geometry(const std::string& value)
+{
+    if (value == "spheres") {
+        return EffectiveMediumGeometry::Spheres;
+    }
+    if (value == "holes") {
+        return EffectiveMediumGeometry::Holes;
+    }
+
+    throw std::runtime_error(
+        "Unknown geometry '" + value
+        + "'. Options are: spheres, holes.");
+}
+
 std::string effective_medium_model_name(EffectiveMediumModel model)
 {
     switch (model) {
@@ -120,14 +148,53 @@ std::string effective_medium_model_name(EffectiveMediumModel model)
     throw std::runtime_error("Unhandled effective-medium model enum");
 }
 
+std::string effective_medium_geometry_name(EffectiveMediumGeometry geometry)
+{
+    switch (geometry) {
+        case EffectiveMediumGeometry::Spheres:
+            return "spheres";
+        case EffectiveMediumGeometry::Holes:
+            return "holes";
+    }
+
+    throw std::runtime_error("Unhandled effective-medium geometry enum");
+}
+
+EffectiveMediumMorphology effective_medium_morphology(
+    EffectiveMediumGeometry geometry,
+    std::complex<double> eps_metal,
+    std::complex<double> eps_air,
+    double effe_scaled)
+{
+    if (effe_scaled < 0.0 || effe_scaled > 1.0) {
+        throw std::runtime_error("Effective-medium filling fraction must be in [0, 1].");
+    }
+
+    // Morphology conventions used by the runtime geometry switch:
+    // - spheres: metal inclusions in air host, inclusion fraction = f
+    // - holes:   air inclusions in metal host, inclusion fraction = 1 - f
+    switch (geometry) {
+        case EffectiveMediumGeometry::Spheres:
+            return {eps_metal, eps_air, effe_scaled};
+        case EffectiveMediumGeometry::Holes:
+            return {eps_air, eps_metal, 1.0 - effe_scaled};
+    }
+
+    throw std::runtime_error("Unhandled effective-medium geometry enum");
+}
+
 std::filesystem::path output_path_for_time(const std::string& project_root,
                                            int time_s,
-                                           EffectiveMediumModel model)
+                                           EffectiveMediumModel model,
+                                           EffectiveMediumGeometry geometry)
 {
     const std::string basename = "silver_nanoisland_" + std::to_string(time_s) + "s";
-    const std::string suffix = (model == EffectiveMediumModel::Mmgm)
+    const bool use_legacy_filename =
+        model == EffectiveMediumModel::Mmgm && geometry == EffectiveMediumGeometry::Spheres;
+    const std::string suffix = use_legacy_filename
         ? ".dat"
-        : "__em=" + effective_medium_model_name(model) + ".dat";
+        : "__em=" + effective_medium_model_name(model)
+          + "__geom=" + effective_medium_geometry_name(geometry) + ".dat";
     return std::filesystem::path(project_root)
            / "data/output/transmittance"
            / (basename + suffix);
@@ -445,43 +512,107 @@ int run_toy_front_stack_diagnostic(const std::string& project_root)
 
 std::complex<double> evaluate_effective_permittivity(
     EffectiveMediumModel model,
+    EffectiveMediumGeometry geometry,
     EffectiveMediumState& state,
     const nublar::ExperimentalRow& row,
     std::complex<double> eps_metal,
-    double host_eps,
+    std::complex<double> eps_air,
     double wavelength_nm,
     double effe_scaled)
 {
+    const EffectiveMediumMorphology morphology =
+        effective_medium_morphology(geometry, eps_metal, eps_air, effe_scaled);
+
     switch (model) {
         case EffectiveMediumModel::MaxwellGarnett:
-            return nublar::MaxwellGarnett(effe_scaled, eps_metal, host_eps);
+            return nublar::MaxwellGarnett(
+                morphology.inclusion_fraction,
+                morphology.inclusion_eps,
+                morphology.host_eps);
 
         case EffectiveMediumModel::Bruggeman: {
-            const auto roots = nublar::BruggemanRoots(effe_scaled, eps_metal, host_eps);
+            const auto roots = nublar::BruggemanRoots(
+                morphology.inclusion_fraction,
+                morphology.inclusion_eps,
+                morphology.host_eps);
             const std::complex<double> eps_eff = state.previous_bruggeman_eps_eff.has_value()
                 ? nublar::BruggemanSelectContinuationRoot(
                     roots, *state.previous_bruggeman_eps_eff)
                 : nublar::BruggemanSelectInitialRoot(
-                    effe_scaled, roots, eps_metal, host_eps);
+                    morphology.inclusion_fraction,
+                    roots,
+                    morphology.inclusion_eps,
+                    morphology.host_eps);
 
             state.previous_bruggeman_eps_eff = eps_eff;
 
-            if (nublar::BruggemanSelectedRootViolatesPassivity(eps_eff, eps_metal, host_eps)) {
+            if (nublar::BruggemanSelectedRootViolatesPassivity(
+                    eps_eff, morphology.inclusion_eps, morphology.host_eps)) {
                 std::cerr << "[WARN] Bruggeman selected root has Im(eps_eff) = "
                           << eps_eff.imag()
                           << " at wavelength_nm = " << wavelength_nm
                           << " for time_s = " << row.time_s
-                          << " and filling fraction = " << effe_scaled
+                          << " and morphology fraction = " << morphology.inclusion_fraction
                           << " while both constituents are passive"
                           << std::endl;
             }
+
+            const EffectiveMediumMorphology spheres_morphology = effective_medium_morphology(
+                EffectiveMediumGeometry::Spheres, eps_metal, eps_air, effe_scaled);
+            const EffectiveMediumMorphology holes_morphology = effective_medium_morphology(
+                EffectiveMediumGeometry::Holes, eps_metal, eps_air, effe_scaled);
+
+            const auto spheres_roots = nublar::BruggemanRoots(
+                spheres_morphology.inclusion_fraction,
+                spheres_morphology.inclusion_eps,
+                spheres_morphology.host_eps);
+            const auto holes_roots = nublar::BruggemanRoots(
+                holes_morphology.inclusion_fraction,
+                holes_morphology.inclusion_eps,
+                holes_morphology.host_eps);
+
+            const std::complex<double> spheres_eps_eff =
+                state.validation_previous_bruggeman_spheres_eps_eff.has_value()
+                ? nublar::BruggemanSelectContinuationRoot(
+                    spheres_roots, *state.validation_previous_bruggeman_spheres_eps_eff)
+                : nublar::BruggemanSelectInitialRoot(
+                    spheres_morphology.inclusion_fraction,
+                    spheres_roots,
+                    spheres_morphology.inclusion_eps,
+                    spheres_morphology.host_eps);
+            const std::complex<double> holes_eps_eff =
+                state.validation_previous_bruggeman_holes_eps_eff.has_value()
+                ? nublar::BruggemanSelectContinuationRoot(
+                    holes_roots, *state.validation_previous_bruggeman_holes_eps_eff)
+                : nublar::BruggemanSelectInitialRoot(
+                    holes_morphology.inclusion_fraction,
+                    holes_roots,
+                    holes_morphology.inclusion_eps,
+                    holes_morphology.host_eps);
+
+            state.validation_previous_bruggeman_spheres_eps_eff = spheres_eps_eff;
+            state.validation_previous_bruggeman_holes_eps_eff = holes_eps_eff;
+            state.max_bruggeman_geometry_difference = std::max(
+                state.max_bruggeman_geometry_difference,
+                std::abs(spheres_eps_eff - holes_eps_eff));
 
             return eps_eff;
         }
 
         case EffectiveMediumModel::Mmgm:
+            if (geometry == EffectiveMediumGeometry::Holes) {
+                throw std::runtime_error(
+                    "MMGM geometry=holes is not implemented: the current MMGM path still "
+                    "uses AFM-derived metal-island radius/distribution inputs, so inverting "
+                    "host/inclusion would not be a physically consistent holes model.");
+            }
             return nublar::mmgm_effective_permittivity(
-                row.rave_nm, eps_metal, host_eps, wavelength_nm, effe_scaled, row);
+                row.rave_nm,
+                morphology.inclusion_eps,
+                morphology.host_eps,
+                wavelength_nm,
+                morphology.inclusion_fraction,
+                row);
     }
 
     throw std::runtime_error("Unhandled effective-medium model enum");
@@ -493,6 +624,7 @@ void write_spectrum(const std::string& project_root,
                     nanosphere& dielectric_sphere,
                     double host_eps,
                     EffectiveMediumModel effective_medium_model,
+                    EffectiveMediumGeometry effective_medium_geometry,
                     std::optional<double> override_effe,
                     std::optional<double> override_thickness_nm,
                     const nublar::OmegaRange& omega_range,
@@ -503,7 +635,7 @@ void write_spectrum(const std::string& project_root,
                     double xi)
 {
     const std::filesystem::path output_path = output_path_for_time(
-        project_root, row.time_s, effective_medium_model);
+        project_root, row.time_s, effective_medium_model, effective_medium_geometry);
     std::filesystem::create_directories(output_path.parent_path());
 
     std::ofstream out(output_path);
@@ -521,6 +653,8 @@ void write_spectrum(const std::string& project_root,
     out << "# xi " << xi << "\n";
     out << "# effective_medium_model "
         << effective_medium_model_name(effective_medium_model) << "\n";
+    out << "# effective_medium_geometry "
+        << effective_medium_geometry_name(effective_medium_geometry) << "\n";
     if (override_effe.has_value()) {
         out << "# override_effe " << *override_effe << "\n";
     }
@@ -560,15 +694,18 @@ void write_spectrum(const std::string& project_root,
 
         const std::complex<double> eps_metal =
             nublar::workflow_silver_permittivity(metal_sphere, omega_ev);
+        const std::complex<double> eps_air =
+            nublar::workflow_air_permittivity(host_eps);
         const double effe_scaled = override_effe.has_value()
             ? *override_effe
             : (xi * row.effe);
         const std::complex<double> eps_eff = evaluate_effective_permittivity(
             effective_medium_model,
+            effective_medium_geometry,
             effective_medium_state,
             row,
             eps_metal,
-            host_eps,
+            eps_air,
             wavelength_nm,
             effe_scaled);
 
@@ -577,8 +714,7 @@ void write_spectrum(const std::string& project_root,
         const std::complex<double> eps_glass =
             nublar::workflow_dielectric_permittivity(dielectric_sphere, "glass", omega_ev);
 
-        const std::complex<double> n_air = principal_refractive_index(
-            nublar::workflow_air_permittivity(host_eps));
+        const std::complex<double> n_air = principal_refractive_index(eps_air);
         const std::complex<double> n_glass = principal_refractive_index(eps_glass);
         const double d_eff_nm = override_thickness_nm.has_value()
             ? *override_thickness_nm
@@ -625,6 +761,19 @@ void write_spectrum(const std::string& project_root,
             << A_front << "\n";
     }
 
+    if (effective_medium_model == EffectiveMediumModel::Bruggeman) {
+        constexpr double kBruggemanGeometryTolerance = 1e-9;
+        const char* level = (effective_medium_state.max_bruggeman_geometry_difference
+                             <= kBruggemanGeometryTolerance)
+            ? "[INFO]"
+            : "[WARN]";
+        std::cerr << level
+                  << " Bruggeman geometry invariance check for time_s=" << row.time_s
+                  << ": max |eps_eff(spheres) - eps_eff(holes)| = "
+                  << effective_medium_state.max_bruggeman_geometry_difference
+                  << std::endl;
+    }
+
     std::cout << output_path << "\n";
 }
 
@@ -636,6 +785,7 @@ int main(int argc, char* argv[])
         const std::string project_root = nublar::resolve_project_root(argv[0]);
         bool toy_mode = false;
         EffectiveMediumModel effective_medium_model = EffectiveMediumModel::Mmgm;
+        EffectiveMediumGeometry effective_medium_geometry = EffectiveMediumGeometry::Spheres;
         std::optional<double> override_effe;
         std::optional<double> override_thickness_nm;
         std::vector<std::string> positional_args;
@@ -653,6 +803,14 @@ int main(int argc, char* argv[])
                         "Options are: mg, bruggeman, mmgm.");
                 }
                 effective_medium_model = parse_effective_medium_model(argv[++i]);
+                continue;
+            }
+            if (arg == "--geometry") {
+                if (i + 1 >= argc) {
+                    throw std::runtime_error(
+                        "Missing value after --geometry. Options are: spheres, holes.");
+                }
+                effective_medium_geometry = parse_effective_medium_geometry(argv[++i]);
                 continue;
             }
             if (arg == "--override-effe") {
@@ -722,6 +880,8 @@ int main(int argc, char* argv[])
 
         std::cout << "[INFO] Effective medium model: "
                   << effective_medium_model_name(effective_medium_model) << std::endl;
+        std::cout << "[INFO] Geometry: "
+                  << effective_medium_geometry_name(effective_medium_geometry) << std::endl;
         if (override_effe.has_value()) {
             std::cout << "[INFO] Override effe: " << *override_effe << std::endl;
         }
@@ -746,6 +906,7 @@ int main(int argc, char* argv[])
                            models.dielectric_sphere,
                            models.host_eps,
                            effective_medium_model,
+                           effective_medium_geometry,
                            override_effe,
                            override_thickness_nm,
                            omega_range,

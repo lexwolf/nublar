@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         choices=("mg", "bruggeman", "mmgm"),
         help="Calculated-spectrum effective-medium model (default: mmgm)",
     )
+    parser.add_argument(
+        "--geometry",
+        default="spheres",
+        choices=("spheres", "holes"),
+        help="Calculated-spectrum morphology convention (default: spheres)",
+    )
     return parser.parse_args()
 
 
@@ -105,14 +111,21 @@ def parse_model_input(path: Path) -> list[ModelInputRow]:
     return rows
 
 
-def calculated_spectrum_path(calculated_dir: Path, time_s: int, effective_medium_model: str) -> Path:
+def calculated_spectrum_path(
+    calculated_dir: Path, time_s: int, effective_medium_model: str, geometry: str
+) -> Path:
     basename = f"silver_nanoisland_{time_s}s"
-    suffix = ".dat" if effective_medium_model == "mmgm" else f"__em={effective_medium_model}.dat"
+    use_legacy_name = effective_medium_model == "mmgm" and geometry == "spheres"
+    suffix = (
+        ".dat"
+        if use_legacy_name
+        else f"__em={effective_medium_model}__geom={geometry}.dat"
+    )
     return calculated_dir / f"{basename}{suffix}"
 
 
 def build_manifest_rows(
-    rows: list[ModelInputRow], calculated_dir: Path, effective_medium_model: str
+    rows: list[ModelInputRow], calculated_dir: Path, effective_medium_model: str, geometry: str
 ) -> list[dict[str, object]]:
     common_lamin = max(row.lamin_nm for row in rows)
     common_lamax = min(row.lamax_nm for row in rows)
@@ -124,7 +137,7 @@ def build_manifest_rows(
     manifest_rows: list[dict[str, object]] = []
     for row in sorted(rows, key=lambda item: item.time_s):
         calculated_dat = calculated_spectrum_path(
-            calculated_dir, row.time_s, effective_medium_model
+            calculated_dir, row.time_s, effective_medium_model, geometry
         )
         manifest_rows.append(
             {
@@ -165,7 +178,9 @@ def write_manifest_dat(rows: list[dict[str, object]], path: Path) -> None:
 def main() -> int:
     args = parse_args()
     rows = parse_model_input(args.model_input)
-    manifest_rows = build_manifest_rows(rows, args.calculated_dir, args.effective_medium_model)
+    manifest_rows = build_manifest_rows(
+        rows, args.calculated_dir, args.effective_medium_model, args.geometry
+    )
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     csv_path = args.outdir / f"{args.basename}.csv"
@@ -190,6 +205,7 @@ def main() -> int:
     print(f"Wrote: {csv_path}")
     print(f"Wrote: {dat_path}")
     print(f"Effective-medium model: {args.effective_medium_model}")
+    print(f"Geometry: {args.geometry}")
     print(
         "Common wavelength range: "
         f"{float(manifest_rows[0]['common_lamin_nm']):.10g} to "
