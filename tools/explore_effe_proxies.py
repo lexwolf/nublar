@@ -18,6 +18,7 @@ DEFAULT_INPUT = Path("data/input/experimental/model_input.dat")
 DEFAULT_OUTDIR = Path("data/output/effe_proxy")
 DEFAULT_GNUPLOT = Path("scripts/gnuplot/output/effe_proxy")
 DEFAULT_IMGDIR = Path("img/output/effe_proxy")
+GEOMETRY_CHOICES = ("spheres", "holes")
 
 
 class EffeProxyError(RuntimeError):
@@ -64,7 +65,7 @@ FIELD_ALIASES: dict[str, list[str]] = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Explore alternative effe proxies from data/input/experimental/model_input.dat, "
+            "Explore alternative effe proxies from the geometry-specific experimental manifest, "
             "write comparison tables, and generate a gnuplot script."
         )
     )
@@ -97,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Clip all proxy values into [0, 1] before writing outputs",
     )
+    parser.add_argument(
+        "--geometry",
+        choices=GEOMETRY_CHOICES,
+        default="spheres",
+        help="Morphology convention used to select the default manifest and proxy set",
+    )
     return parser.parse_args()
 
 
@@ -106,6 +113,14 @@ def require_input(path: Path) -> None:
             f"Input file not found: {path}\n"
             "Please run python3 tools/build_experimental_input.py first."
         )
+
+
+def resolved_input_path(args: argparse.Namespace) -> Path:
+    if args.input != DEFAULT_INPUT:
+        return args.input
+    if args.geometry == "holes":
+        return Path("data/input/experimental/model_input__geom=holes.dat")
+    return args.input
 
 
 def _parse_header_tokens(header_line: str) -> list[str]:
@@ -166,7 +181,7 @@ def maybe_clip(value: float, clip: bool) -> float:
     return max(0.0, min(1.0, value))
 
 
-def build_proxy_results(records: list[Record], clip: bool) -> list[ProxyResult]:
+def build_proxy_results(records: list[Record], clip: bool, geometry: str) -> list[ProxyResult]:
     coverage = [maybe_clip(r.coverage_fraction, clip) for r in records]
     baseline = [
         maybe_clip(
@@ -207,20 +222,6 @@ def build_proxy_results(records: list[Record], clip: bool) -> list[ProxyResult]:
         )
         for r in records
     ]
-    thickness_over_rave = [
-        maybe_clip(
-            compute_effe_proxy(
-                "eq_thickness_over_Rave",
-                r.coverage_fraction,
-                r.eq_thickness_nm,
-                r.mean_height_nm,
-                r.afm_rave_nm,
-            ),
-            clip,
-        )
-        for r in records
-    ]
-
     results = [
         ProxyResult("coverage_fraction", "coverage fraction", coverage),
         ProxyResult(
@@ -238,12 +239,29 @@ def build_proxy_results(records: list[Record], clip: bool) -> list[ProxyResult]:
             "sqrt(coverage * (eq thickness / mean height))",
             geometric,
         ),
-        ProxyResult(
-            "eq_thickness_over_Rave",
-            "eq thickness / Rave",
-            thickness_over_rave,
-        ),
     ]
+
+    if geometry != "holes":
+        thickness_over_rave = [
+            maybe_clip(
+                compute_effe_proxy(
+                    "eq_thickness_over_Rave",
+                    r.coverage_fraction,
+                    r.eq_thickness_nm,
+                    r.mean_height_nm,
+                    r.afm_rave_nm,
+                ),
+                clip,
+            )
+            for r in records
+        ]
+        results.append(
+            ProxyResult(
+                "eq_thickness_over_Rave",
+                "eq thickness / Rave",
+                thickness_over_rave,
+            )
+        )
 
     for name, label in (
         ("hybrid_alpha25", "coverage^0.25 * baseline^0.75"),
@@ -392,6 +410,7 @@ def write_gnuplot_script(
     dat_path: Path,
     png_path: Path,
     results: list[ProxyResult],
+    geometry: str,
 ) -> None:
     series = [result for result in results]
     plot_cmds: list[str] = []
@@ -417,7 +436,7 @@ def write_gnuplot_script(
     script = f"""set terminal pngcairo noenhanced size 1400,900
 set output '{png_path.as_posix()}'
 
-set title 'Candidate effe proxies vs deposition time'
+set title 'Candidate effe proxies vs deposition time ({geometry})'
 set xlabel 'Deposition time (s)'
 set ylabel 'Proxy value'
 set grid
@@ -445,26 +464,28 @@ def print_summary(records: list[Record], diagnostics: list[ProxyDiagnostics]) ->
 
 def main() -> int:
     args = parse_args()
-    require_input(args.input)
+    input_path = resolved_input_path(args)
+    require_input(input_path)
 
-    records = load_records(args.input)
-    results = build_proxy_results(records, args.clip_unit_interval)
+    records = load_records(input_path)
+    results = build_proxy_results(records, args.clip_unit_interval, args.geometry)
     diagnostics = build_diagnostics(results)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     args.gnuplot_dir.mkdir(parents=True, exist_ok=True)
     args.img_dir.mkdir(parents=True, exist_ok=True)
 
-    dat_path = args.outdir / "effe_proxy_comparison.dat"
-    csv_path = args.outdir / "effe_proxy_comparison.csv"
-    diag_path = args.outdir / "effe_proxy_diagnostics.dat"
-    gp_path = args.gnuplot_dir / "plot_effe_proxies.gp"
-    png_path = args.img_dir / "effe_proxy_comparison.png"
+    suffix = "" if args.geometry == "spheres" else f"__geom={args.geometry}"
+    dat_path = args.outdir / f"effe_proxy_comparison{suffix}.dat"
+    csv_path = args.outdir / f"effe_proxy_comparison{suffix}.csv"
+    diag_path = args.outdir / f"effe_proxy_diagnostics{suffix}.dat"
+    gp_path = args.gnuplot_dir / f"plot_effe_proxies{suffix}.gp"
+    png_path = args.img_dir / f"effe_proxy_comparison{suffix}.png"
 
     write_comparison_dat(dat_path, records, results)
     write_comparison_csv(csv_path, records, results)
     write_diagnostics(diag_path, diagnostics)
-    write_gnuplot_script(gp_path, dat_path, png_path, results)
+    write_gnuplot_script(gp_path, dat_path, png_path, results, args.geometry)
     print_summary(records, diagnostics)
 
     print(f"Wrote: {dat_path}")
