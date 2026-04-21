@@ -17,6 +17,7 @@ GLASS_THICKNESS_NM="1100000.0"
 INCLUDE_INCOHERENT_MULTIPLES="1"
 ETA="1.0"
 XI="1.0"
+EFFECTIVE_MEDIUM_MODEL="mmgm"
 
 usage() {
   cat <<EOF
@@ -63,6 +64,10 @@ Options:
   --xi VALUE
       Scale effective filling fraction: effe -> xi * effe
       Default: $XI
+  --effective-medium-model VALUE
+      Effective-medium model passed to bin/transmittance and the common-range manifest builder
+      Options: mg, bruggeman, mmgm
+      Default: $EFFECTIVE_MEDIUM_MODEL
   -h, --help
       Show this help message
 EOF
@@ -122,6 +127,10 @@ while [[ $# -gt 0 ]]; do
       XI="$2"
       shift 2
       ;;
+    --effective-medium-model)
+      EFFECTIVE_MEDIUM_MODEL="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -134,6 +143,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$EFFECTIVE_MEDIUM_MODEL" in
+  mg|bruggeman|mmgm)
+    ;;
+  *)
+    echo "Invalid effective-medium model: $EFFECTIVE_MEDIUM_MODEL" >&2
+    echo "Options are: mg, bruggeman, mmgm" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$EFFECTIVE_MEDIUM_MODEL" != "mmgm" ]]; then
+  if [[ "$COMMON_DATASET" == "data/output/transmittance/common_transmittance_manifest.dat" ]]; then
+    COMMON_DATASET="data/output/transmittance/common_transmittance_manifest__em=${EFFECTIVE_MEDIUM_MODEL}.dat"
+  fi
+  if [[ "$PLOT_SCRIPT" == "scripts/gnuplot/comparisons/transmittance/plot_experimental_vs_calculated.gp" ]]; then
+    PLOT_SCRIPT="scripts/gnuplot/comparisons/transmittance/plot_experimental_vs_calculated__em=${EFFECTIVE_MEDIUM_MODEL}.gp"
+  fi
+  if [[ "$PLOT_PNG" == "img/comparisons/transmittance/experimental_vs_calculated.png" ]]; then
+    PLOT_PNG="img/comparisons/transmittance/experimental_vs_calculated__em=${EFFECTIVE_MEDIUM_MODEL}.png"
+  fi
+fi
+
 echo "==> Building experimental input"
 python3 tools/build_experimental_input.py \
   --radius-proxy "$RAVE_PROXY" \
@@ -145,6 +176,7 @@ python3 tools/build_experimental_input.py \
 echo "==> Building common-range transmittance dataset"
 python3 tools/build_common_transmittance_dataset.py \
   --model-input "$MODEL_INPUT" \
+  --effective-medium-model "$EFFECTIVE_MEDIUM_MODEL" \
   --outdir "$(dirname "$COMMON_DATASET")" \
   --basename "$(basename "${COMMON_DATASET%.*}")"
 
@@ -155,6 +187,7 @@ fi
 
 echo "==> Running transmittance solver"
 ./bin/transmittance \
+  --effective-medium-model "$EFFECTIVE_MEDIUM_MODEL" \
   "$MODEL_INPUT" \
   "$ITO_THICKNESS_NM" \
   "$GLASS_THICKNESS_NM" \
@@ -176,5 +209,6 @@ echo "  spectra dir:     data/output/transmittance"
 echo "  thickness proxy: $THICKNESS_PROXY"
 echo "  eta:             $ETA"
 echo "  xi:              $XI"
+echo "  em model:        $EFFECTIVE_MEDIUM_MODEL"
 echo "  gnuplot script:  $PLOT_SCRIPT"
 echo "  plot target:     $PLOT_PNG"

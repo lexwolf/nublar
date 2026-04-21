@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -78,11 +79,58 @@ struct SingleSlabTmmDebug {
     RtCoefficients rt;
 };
 
-std::filesystem::path output_path_for_time(const std::string& project_root, int time_s)
+enum class EffectiveMediumModel {
+    MaxwellGarnett,
+    Bruggeman,
+    Mmgm,
+};
+
+struct EffectiveMediumState {
+    std::optional<std::complex<double>> previous_bruggeman_eps_eff;
+};
+
+EffectiveMediumModel parse_effective_medium_model(const std::string& value)
 {
+    if (value == "mg") {
+        return EffectiveMediumModel::MaxwellGarnett;
+    }
+    if (value == "bruggeman") {
+        return EffectiveMediumModel::Bruggeman;
+    }
+    if (value == "mmgm") {
+        return EffectiveMediumModel::Mmgm;
+    }
+
+    throw std::runtime_error(
+        "Unknown effective-medium model '" + value
+        + "'. Options are: mg, bruggeman, mmgm.");
+}
+
+std::string effective_medium_model_name(EffectiveMediumModel model)
+{
+    switch (model) {
+        case EffectiveMediumModel::MaxwellGarnett:
+            return "mg";
+        case EffectiveMediumModel::Bruggeman:
+            return "bruggeman";
+        case EffectiveMediumModel::Mmgm:
+            return "mmgm";
+    }
+
+    throw std::runtime_error("Unhandled effective-medium model enum");
+}
+
+std::filesystem::path output_path_for_time(const std::string& project_root,
+                                           int time_s,
+                                           EffectiveMediumModel model)
+{
+    const std::string basename = "silver_nanoisland_" + std::to_string(time_s) + "s";
+    const std::string suffix = (model == EffectiveMediumModel::Mmgm)
+        ? ".dat"
+        : "__em=" + effective_medium_model_name(model) + ".dat";
     return std::filesystem::path(project_root)
            / "data/output/transmittance"
-           / ("silver_nanoisland_" + std::to_string(time_s) + "s.dat");
+           / (basename + suffix);
 }
 
 double safe_real_or_nan(const std::complex<double>& z)
@@ -395,11 +443,58 @@ int run_toy_front_stack_diagnostic(const std::string& project_root)
     return any_failure ? 2 : 0;
 }
 
+std::complex<double> evaluate_effective_permittivity(
+    EffectiveMediumModel model,
+    EffectiveMediumState& state,
+    const nublar::ExperimentalRow& row,
+    std::complex<double> eps_metal,
+    double host_eps,
+    double wavelength_nm,
+    double effe_scaled)
+{
+    switch (model) {
+        case EffectiveMediumModel::MaxwellGarnett:
+            return nublar::MaxwellGarnett(effe_scaled, eps_metal, host_eps);
+
+        case EffectiveMediumModel::Bruggeman: {
+            const auto roots = nublar::BruggemanRoots(effe_scaled, eps_metal, host_eps);
+            const std::complex<double> eps_eff = state.previous_bruggeman_eps_eff.has_value()
+                ? nublar::BruggemanSelectContinuationRoot(
+                    roots, *state.previous_bruggeman_eps_eff)
+                : nublar::BruggemanSelectInitialRoot(
+                    effe_scaled, roots, eps_metal, host_eps);
+
+            state.previous_bruggeman_eps_eff = eps_eff;
+
+            if (nublar::BruggemanSelectedRootViolatesPassivity(eps_eff, eps_metal, host_eps)) {
+                std::cerr << "[WARN] Bruggeman selected root has Im(eps_eff) = "
+                          << eps_eff.imag()
+                          << " at wavelength_nm = " << wavelength_nm
+                          << " for time_s = " << row.time_s
+                          << " and filling fraction = " << effe_scaled
+                          << " while both constituents are passive"
+                          << std::endl;
+            }
+
+            return eps_eff;
+        }
+
+        case EffectiveMediumModel::Mmgm:
+            return nublar::mmgm_effective_permittivity(
+                row.rave_nm, eps_metal, host_eps, wavelength_nm, effe_scaled, row);
+    }
+
+    throw std::runtime_error("Unhandled effective-medium model enum");
+}
+
 void write_spectrum(const std::string& project_root,
                     const nublar::ExperimentalRow& row,
                     nanosphere& metal_sphere,
                     nanosphere& dielectric_sphere,
                     double host_eps,
+                    EffectiveMediumModel effective_medium_model,
+                    std::optional<double> override_effe,
+                    std::optional<double> override_thickness_nm,
                     const nublar::OmegaRange& omega_range,
                     double ito_thickness_nm,
                     double glass_thickness_nm,
@@ -407,7 +502,8 @@ void write_spectrum(const std::string& project_root,
                     double eta,
                     double xi)
 {
-    const std::filesystem::path output_path = output_path_for_time(project_root, row.time_s);
+    const std::filesystem::path output_path = output_path_for_time(
+        project_root, row.time_s, effective_medium_model);
     std::filesystem::create_directories(output_path.parent_path());
 
     std::ofstream out(output_path);
@@ -417,11 +513,20 @@ void write_spectrum(const std::string& project_root,
 
     out << "# time_s " << row.time_s << "\n";
     out << "# effe " << std::setprecision(16) << row.effe << "\n";
-    out << "# effe_scaled " << (xi * row.effe) << "\n";
+    out << "# effe_scaled "
+        << (override_effe.has_value() ? *override_effe : (xi * row.effe)) << "\n";
     out << "# Rave_nm " << row.rave_nm << "\n";
     out << "# effective_thickness_nm " << row.thickness_nm << "\n";
     out << "# eta " << eta << "\n";
     out << "# xi " << xi << "\n";
+    out << "# effective_medium_model "
+        << effective_medium_model_name(effective_medium_model) << "\n";
+    if (override_effe.has_value()) {
+        out << "# override_effe " << *override_effe << "\n";
+    }
+    if (override_thickness_nm.has_value()) {
+        out << "# override_thickness_nm " << *override_thickness_nm << "\n";
+    }
     out << "# ito_thickness_nm " << ito_thickness_nm << "\n";
     out << "# glass_thickness_nm " << glass_thickness_nm << "\n";
     out << "# distribution two_lognormal "
@@ -436,6 +541,7 @@ void write_spectrum(const std::string& project_root,
         << "eps_eff_re eps_eff_im eps_ito_re eps_ito_im eps_glass_re eps_glass_im A_front\n";
 
     out << std::fixed << std::setprecision(10);
+    EffectiveMediumState effective_medium_state;
 
     for (int i = 0; i < row.n_lambda; ++i) {
         const double wavelength_nm = row.lamin_nm + static_cast<double>(i) * row.dlam_nm;
@@ -454,9 +560,17 @@ void write_spectrum(const std::string& project_root,
 
         const std::complex<double> eps_metal =
             nublar::workflow_silver_permittivity(metal_sphere, omega_ev);
-        const double effe_scaled = xi * row.effe;
-        const std::complex<double> eps_eff = nublar::mmgm_effective_permittivity(
-            row.rave_nm, eps_metal, host_eps, wavelength_nm, effe_scaled, row);
+        const double effe_scaled = override_effe.has_value()
+            ? *override_effe
+            : (xi * row.effe);
+        const std::complex<double> eps_eff = evaluate_effective_permittivity(
+            effective_medium_model,
+            effective_medium_state,
+            row,
+            eps_metal,
+            host_eps,
+            wavelength_nm,
+            effe_scaled);
 
         const std::complex<double> eps_ito =
             nublar::workflow_dielectric_permittivity(dielectric_sphere, "ito", omega_ev);
@@ -466,7 +580,9 @@ void write_spectrum(const std::string& project_root,
         const std::complex<double> n_air = principal_refractive_index(
             nublar::workflow_air_permittivity(host_eps));
         const std::complex<double> n_glass = principal_refractive_index(eps_glass);
-        const double d_eff_nm = eta * row.thickness_nm;
+        const double d_eff_nm = override_thickness_nm.has_value()
+            ? *override_thickness_nm
+            : (eta * row.thickness_nm);
 
         const std::vector<Layer> front_layers = {
             {eps_eff, d_eff_nm},
@@ -518,31 +634,100 @@ int main(int argc, char* argv[])
 {
     try {
         const std::string project_root = nublar::resolve_project_root(argv[0]);
-        if (argc >= 2 && std::string(argv[1]) == "--toy") {
+        bool toy_mode = false;
+        EffectiveMediumModel effective_medium_model = EffectiveMediumModel::Mmgm;
+        std::optional<double> override_effe;
+        std::optional<double> override_thickness_nm;
+        std::vector<std::string> positional_args;
+
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--toy") {
+                toy_mode = true;
+                continue;
+            }
+            if (arg == "--effective-medium-model") {
+                if (i + 1 >= argc) {
+                    throw std::runtime_error(
+                        "Missing value after --effective-medium-model. "
+                        "Options are: mg, bruggeman, mmgm.");
+                }
+                effective_medium_model = parse_effective_medium_model(argv[++i]);
+                continue;
+            }
+            if (arg == "--override-effe") {
+                if (i + 1 >= argc) {
+                    throw std::runtime_error("Missing value after --override-effe.");
+                }
+                override_effe = std::stod(argv[++i]);
+                continue;
+            }
+            if (arg == "--override-thickness-nm") {
+                if (i + 1 >= argc) {
+                    throw std::runtime_error("Missing value after --override-thickness-nm.");
+                }
+                override_thickness_nm = std::stod(argv[++i]);
+                continue;
+            }
+            if (arg.rfind("--", 0) == 0) {
+                throw std::runtime_error("Unknown option: " + arg);
+            }
+            positional_args.push_back(arg);
+        }
+
+        if (toy_mode) {
             return run_toy_front_stack_diagnostic(project_root);
         }
-        const std::filesystem::path manifest_path = (argc >= 2)
-            ? std::filesystem::path(argv[1])
+
+        if (override_effe.has_value()) {
+            if (*override_effe < 0.0 || *override_effe > 1.0) {
+                throw std::runtime_error("--override-effe must be in [0, 1].");
+            }
+            if (effective_medium_model == EffectiveMediumModel::Mmgm) {
+                throw std::runtime_error(
+                    "--override-effe is only supported for mg and bruggeman effective-medium models.");
+            }
+        }
+        if (override_thickness_nm.has_value() && *override_thickness_nm <= 0.0) {
+            throw std::runtime_error("--override-thickness-nm must be positive.");
+        }
+
+        const std::filesystem::path manifest_path = (!positional_args.empty())
+            ? std::filesystem::path(positional_args[0])
             : std::filesystem::path(project_root) / "data/input/experimental/model_input.dat";
 
-        // Optional CLI overrides
-        // argv[2] = ITO thickness in nm          (default 0.0)
-        // argv[3] = glass thickness in nm        (default 1.1e6 nm = 1.1 mm)
-        // argv[4] = include incoherent multiples (default 1)
-        // argv[5] = nanoisland effective thickness scaling eta (default 1.0)
-        // argv[6] = effective filling fraction scaling xi (default 1.0)
-        const double ito_thickness_nm = (argc >= 3) ? std::stod(argv[2]) : 0.0;
-        const double glass_thickness_nm = (argc >= 4) ? std::stod(argv[3]) : 1.1e6;
-        const bool include_incoherent_multiples = (argc >= 5) ? (std::stoi(argv[4]) != 0) : true;
+        // Optional positional overrides after the manifest path:
+        // [1] ITO thickness in nm          (default 0.0)
+        // [2] glass thickness in nm        (default 1.1e6 nm = 1.1 mm)
+        // [3] include incoherent multiples (default 1)
+        // [4] nanoisland effective thickness scaling eta (default 1.0)
+        // [5] effective filling fraction scaling xi (default 1.0)
+        const double ito_thickness_nm = (positional_args.size() >= 2)
+            ? std::stod(positional_args[1])
+            : 0.0;
+        const double glass_thickness_nm = (positional_args.size() >= 3)
+            ? std::stod(positional_args[2])
+            : 1.1e6;
+        const bool include_incoherent_multiples = (positional_args.size() >= 4)
+            ? (std::stoi(positional_args[3]) != 0)
+            : true;
         double eta = 1.0;
-        if (argc > 5) {
-            eta = std::stod(argv[5]);
+        if (positional_args.size() >= 5) {
+            eta = std::stod(positional_args[4]);
         }
         double xi = 1.0;
-        if (argc > 6) {
-            xi = std::stod(argv[6]);
+        if (positional_args.size() >= 6) {
+            xi = std::stod(positional_args[5]);
         }
 
+        std::cout << "[INFO] Effective medium model: "
+                  << effective_medium_model_name(effective_medium_model) << std::endl;
+        if (override_effe.has_value()) {
+            std::cout << "[INFO] Override effe: " << *override_effe << std::endl;
+        }
+        if (override_thickness_nm.has_value()) {
+            std::cout << "[INFO] Override thickness (nm): " << *override_thickness_nm << std::endl;
+        }
         std::cerr << "[INFO] Using thickness scaling eta = " << eta << std::endl;
         std::cerr << "[INFO] Using filling-fraction scaling xi = " << xi << std::endl;
 
@@ -560,6 +745,9 @@ int main(int argc, char* argv[])
                            models.metal_sphere,
                            models.dielectric_sphere,
                            models.host_eps,
+                           effective_medium_model,
+                           override_effe,
+                           override_thickness_nm,
                            omega_range,
                            ito_thickness_nm,
                            glass_thickness_nm,
