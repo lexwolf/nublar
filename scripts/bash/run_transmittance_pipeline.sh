@@ -173,6 +173,9 @@ case "$GEOMETRY" in
 esac
 
 if [[ "$EFFECTIVE_MEDIUM_MODEL" != "mmgm" || "$GEOMETRY" != "spheres" ]]; then
+  if [[ "$MODEL_INPUT" == "data/input/experimental/model_input.dat" ]]; then
+    MODEL_INPUT="data/input/experimental/model_input__geom=${GEOMETRY}.dat"
+  fi
   if [[ "$COMMON_DATASET" == "data/output/transmittance/common_transmittance_manifest.dat" ]]; then
     COMMON_DATASET="data/output/transmittance/common_transmittance_manifest__em=${EFFECTIVE_MEDIUM_MODEL}__geom=${GEOMETRY}.dat"
   fi
@@ -189,6 +192,7 @@ python3 tools/build_experimental_input.py \
   --radius-proxy "$RAVE_PROXY" \
   --effe-proxy "$EFFE_PROXY" \
   --thickness-proxy "$THICKNESS_PROXY" \
+  --geometry "$GEOMETRY" \
   --outdir "$(dirname "$MODEL_INPUT")" \
   --basename "$(basename "${MODEL_INPUT%.*}")"
 

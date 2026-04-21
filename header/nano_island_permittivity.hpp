@@ -34,6 +34,10 @@ struct ExperimentalRow {
     double lamin_nm = 0.0;
     double lamax_nm = 0.0;
     double dlam_nm = 0.0;
+    std::string effective_medium_geometry = "spheres";
+    std::string inclusion_morphology_kind = "metal_islands";
+    std::string thickness_morphology_kind = "metal_height_based";
+    std::string supports_mmgm_geometry = "spheres";
 };
 
 struct OmegaRange {
@@ -213,6 +217,10 @@ inline ExperimentalRow parse_manifest_row(const std::string& line)
     std::string transmittance_label;
     std::string transmittance_dat;
     std::string afm_sources;
+    std::string effective_medium_geometry = "spheres";
+    std::string inclusion_morphology_kind = "metal_islands";
+    std::string thickness_morphology_kind = "metal_height_based";
+    std::string supports_mmgm_geometry = "spheres";
 
     iss >> row.time_s >> n_afm_scans;
 
@@ -268,7 +276,27 @@ inline ExperimentalRow parse_manifest_row(const std::string& line)
         throw std::runtime_error("Manifest row is malformed: " + line);
     }
 
+    std::vector<std::string> trailing_tokens;
+    std::string token;
+    while (iss >> token) {
+        trailing_tokens.push_back(token);
+    }
+
+    if (trailing_tokens.size() == 12) {
+        effective_medium_geometry = trailing_tokens[0];
+        inclusion_morphology_kind = trailing_tokens[1];
+        thickness_morphology_kind = trailing_tokens[2];
+        supports_mmgm_geometry = trailing_tokens[3];
+    } else if (!trailing_tokens.empty() && trailing_tokens.size() != 8) {
+        throw std::runtime_error(
+            "Manifest row has unsupported trailing metadata layout: " + line);
+    }
+
     row.thickness_nm = eq_thickness;
+    row.effective_medium_geometry = effective_medium_geometry;
+    row.inclusion_morphology_kind = inclusion_morphology_kind;
+    row.thickness_morphology_kind = thickness_morphology_kind;
+    row.supports_mmgm_geometry = supports_mmgm_geometry;
 
     if (dist_type != "two_lognormal") {
         throw std::runtime_error("Unsupported distribution type in manifest: " + dist_type);

@@ -153,6 +153,7 @@ def load_filtered_payload_records(
             "_source": source,
             "summary": dict(payload["summary"]),
             "islands": payload["islands"],
+            "holes": payload.get("holes", []),
         }
         grouped.setdefault(extract_time_s(path), []).append(record)
 

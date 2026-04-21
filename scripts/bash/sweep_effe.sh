@@ -148,6 +148,10 @@ case "$GEOMETRY" in
     ;;
 esac
 
+if [[ "$GEOMETRY" != "spheres" && "$MODEL_INPUT" == "data/input/experimental/model_input.dat" ]]; then
+  MODEL_INPUT="data/input/experimental/model_input__geom=${GEOMETRY}.dat"
+fi
+
 if [[ -z "$OVERRIDE_THICKNESS_NM" ]]; then
   echo "--override-thickness-nm is required for sweep_effe.sh" >&2
   exit 1

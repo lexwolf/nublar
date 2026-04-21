@@ -57,7 +57,7 @@ else
 fi
 
 mkdir -p "$OUT_BASE"
-echo "time,file,coverage,thickness_nm,mean_radius_nm,density_um2,island_count" > "$CSV_OUT"
+echo "time,file,coverage,thickness_nm,mean_radius_nm,density_um2,island_count,hole_count,mean_hole_radius_nm,hole_density_um2" > "$CSV_OUT"
 
 for t in 10 20 30 40 50 60; do
     OUTDIR="$OUT_BASE/${t}s_2um_${MODE_TAG}"
@@ -114,7 +114,13 @@ s = data["summary"]
 name = pathlib.Path("$f").name
 time = name.split("_")[2]
 
-print(f"{time},{name},{s['coverage_fraction']},{s['equivalent_thickness_nm']},{s['mean_equivalent_radius_nm']},{s['number_density_per_um2']},{s['island_count']}")
+print(
+    f"{time},{name},{s['coverage_fraction']},{s['equivalent_thickness_nm']},"
+    f"{s['mean_equivalent_radius_nm']},{s['number_density_per_um2']},"
+    f"{s['island_count']},{s.get('hole_count', 0)},"
+    f"{s.get('mean_hole_equivalent_radius_nm', 0.0)},"
+    f"{s.get('hole_number_density_per_um2', 0.0)}"
+)
 EOF
     done
 done

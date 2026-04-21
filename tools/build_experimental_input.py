@@ -65,6 +65,11 @@ THICKNESS_PROXY_CHOICES = (
     "sphere_r95_diameter",
 )
 
+GEOMETRY_CHOICES = (
+    "spheres",
+    "holes",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -136,6 +141,15 @@ def parse_args() -> argparse.Namespace:
         "--basename",
         default="model_input",
         help="Base name for output files (default: model_input)",
+    )
+    parser.add_argument(
+        "--geometry",
+        choices=GEOMETRY_CHOICES,
+        default="spheres",
+        help=(
+            "Effective-medium morphology convention used to build the inclusion-side "
+            "radius distribution (default: spheres)"
+        ),
     )
     return parser.parse_args()
 
@@ -236,6 +250,7 @@ def compute_thickness_proxy(
     thickness_proxy_name: str,
     entries: list[dict[str, Any]],
     radius_proxy_name: str,
+    active_records_key: str,
 ) -> ThicknessProxyResult:
     thickness_vals = [float(e["summary"]["equivalent_thickness_nm"]) for e in entries]
     afm_thickness_mu, afm_thickness_std = mean_std(thickness_vals)
@@ -251,7 +266,7 @@ def compute_thickness_proxy(
         pooled_radii = [
             float(record[radius_proxy_name])
             for entry in entries
-            for record in entry["islands"]
+            for record in entry[active_records_key]
             if float(record[radius_proxy_name]) > 0.0
         ]
         if len(pooled_radii) < 4:
@@ -269,7 +284,32 @@ def compute_thickness_proxy(
     raise ExperimentalInputError(f"Unsupported thickness proxy: {thickness_proxy_name}")
 
 
-def validate_proxy_combination(thickness_proxy_name: str, effe_proxy_name: str) -> None:
+def validate_proxy_combination(
+    geometry: str,
+    radius_proxy_name: str,
+    thickness_proxy_name: str,
+    effe_proxy_name: str,
+) -> None:
+    if geometry == "holes":
+        if radius_proxy_name != "equivalent_radius_nm":
+            raise ExperimentalInputError(
+                "Geometry holes currently supports only radius_proxy=equivalent_radius_nm "
+                "because the extracted hole payload carries only lateral equivalent radii."
+            )
+        if thickness_proxy_name != "equivalent_thickness_nm":
+            raise ExperimentalInputError(
+                "Geometry holes currently supports only thickness_proxy=equivalent_thickness_nm "
+                "because thickness remains metal-height-based and sphere-radius-derived "
+                "thickness proxies are not geometry-safe."
+            )
+        if effe_proxy_name == "eq_thickness_over_Rave":
+            raise ExperimentalInputError(
+                "Geometry holes cannot use effe_proxy=eq_thickness_over_Rave because effe "
+                "must remain tied to the metal-side morphology contract, while the active "
+                "Rave is the hole-radius distribution."
+            )
+        return
+
     if thickness_proxy_name != "sphere_r95_diameter":
         return
 
@@ -292,6 +332,7 @@ def validate_proxy_combination(thickness_proxy_name: str, effe_proxy_name: str) 
 def build_rows(
     afm_grouped: dict[int, list[dict[str, Any]]],
     transmittance: dict[int, TransmittanceSummary],
+    geometry: str,
     radius_proxy: str,
     effe_proxy_name: str,
     thickness_proxy_name: str,
@@ -315,7 +356,11 @@ def build_rows(
             f"Missing transmittance spectra for times: {', '.join(map(str, missing_trans))}"
         )
 
-    validate_proxy_combination(thickness_proxy_name, effe_proxy_name)
+    validate_proxy_combination(geometry, radius_proxy, thickness_proxy_name, effe_proxy_name)
+
+    active_records_key = "islands" if geometry == "spheres" else "holes"
+    inclusion_morphology_kind = "metal_islands" if geometry == "spheres" else "air_holes"
+    supports_mmgm_geometry = geometry
 
     for time_s in common_times:
         entries = afm_grouped[time_s]
@@ -325,19 +370,31 @@ def build_rows(
         density_vals = [float(e["summary"]["number_density_per_um2"]) for e in entries]
         height_vals = [float(e["summary"]["mean_island_height_nm"]) for e in entries]
         afm_thickness_vals = [float(e["summary"]["equivalent_thickness_nm"]) for e in entries]
-        afm_rave_vals = [
-            float(e["summary"][SUMMARY_FIELD_FOR_RADIUS_PROXY[radius_proxy]])
-            for e in entries
-        ]
+        if geometry == "spheres":
+            afm_rave_vals = [
+                float(e["summary"][SUMMARY_FIELD_FOR_RADIUS_PROXY[radius_proxy]])
+                for e in entries
+            ]
+        else:
+            afm_rave_vals = []
+            for entry in entries:
+                hole_radii = [
+                    float(record[radius_proxy])
+                    for record in entry[active_records_key]
+                    if float(record[radius_proxy]) > 0.0
+                ]
+                if hole_radii:
+                    afm_rave_vals.append(mean_std(hole_radii)[0])
         pooled_radii = [
             float(record[radius_proxy])
             for e in entries
-            for record in e["islands"]
+            for record in e[active_records_key]
             if float(record[radius_proxy]) > 0.0
         ]
         if len(pooled_radii) < 4:
             raise ExperimentalInputError(
-                f"Not enough pooled radii to fit a two-lognormal mixture for {time_s}s"
+                f"Not enough pooled radii to fit a two-lognormal mixture for {time_s}s "
+                f"with geometry={geometry}"
             )
 
         coverage_mu, coverage_std = mean_std(coverage_vals)
@@ -345,7 +402,12 @@ def build_rows(
         density_mu, density_std = mean_std(density_vals)
         height_mu, height_std = mean_std(height_vals)
         afm_rave_mu, afm_rave_std = mean_std(afm_rave_vals)
-        selected_thickness = compute_thickness_proxy(thickness_proxy_name, entries, radius_proxy)
+        selected_thickness = compute_thickness_proxy(
+            thickness_proxy_name,
+            entries,
+            radius_proxy,
+            active_records_key,
+        )
         rave_by_proxy = {
             manifest_field: mean_std(
                 [
@@ -355,12 +417,14 @@ def build_rows(
             )[0]
             for proxy_name, manifest_field in MANIFEST_RAVE_FIELD_FOR_RADIUS_PROXY.items()
         }
+        if geometry == "holes":
+            rave_by_proxy["Rave_equivalent_radius_nm"] = afm_rave_mu
         effe_proxy = compute_effe_proxy(
             effe_proxy_name,
             coverage_mu,
             selected_thickness.value_nm,
             height_mu,
-            afm_rave_mu,
+            rave_by_proxy["Rave_volume_equivalent_radius_nm"],
         )
 
         fit = fit_two_lognormal_mixture(pooled_radii)
@@ -416,6 +480,10 @@ def build_rows(
                 "lambda_grid_is_uniform": int(trans.lambda_grid_is_uniform),
                 "transmittance_dat": trans.path.as_posix(),
                 "transmittance_label": trans.sample_label,
+                "effective_medium_geometry": geometry,
+                "inclusion_morphology_kind": inclusion_morphology_kind,
+                "thickness_morphology_kind": "metal_height_based",
+                "supports_mmgm_geometry": supports_mmgm_geometry,
                 **rave_by_proxy,
             }
         )
@@ -473,6 +541,10 @@ CSV_FIELDNAMES = [
     "lambda_grid_is_uniform",
     "transmittance_dat",
     "transmittance_label",
+    "effective_medium_geometry",
+    "inclusion_morphology_kind",
+    "thickness_morphology_kind",
+    "supports_mmgm_geometry",
     "Rave_equivalent_radius_nm",
     "Rave_volume_equivalent_radius_nm",
     "Rave_height_equivalent_radius_mean_nm",
@@ -492,6 +564,8 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
         "mean_height_nm mean_height_nm_std "
         "n_lambda lamin_nm lamax_nm dlam_nm lambda_grid_is_uniform "
         "transmittance_label transmittance_dat afm_sources "
+        "effective_medium_geometry inclusion_morphology_kind thickness_morphology_kind "
+        "supports_mmgm_geometry "
         "Rave_equivalent_radius_nm Rave_volume_equivalent_radius_nm "
         "Rave_height_equivalent_radius_mean_nm Rave_height_equivalent_radius_p95_nm "
         "thickness_proxy_name thickness_proxy_formula "
@@ -515,6 +589,8 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
             "{mean_island_height_nm:.10g} {mean_island_height_nm_std:.10g} "
             "{n_lambda} {lamin_nm:.10g} {lamax_nm:.10g} {dlam_nm:.10g} {lambda_grid_is_uniform} "
             "{transmittance_label} {transmittance_dat} {afm_sources} "
+            "{effective_medium_geometry} {inclusion_morphology_kind} "
+            "{thickness_morphology_kind} {supports_mmgm_geometry} "
             "{Rave_equivalent_radius_nm:.10g} {Rave_volume_equivalent_radius_nm:.10g} "
             "{Rave_height_equivalent_radius_mean_nm:.10g} {Rave_height_equivalent_radius_p95_nm:.10g} "
             "{thickness_proxy_name} {thickness_proxy_formula} "
@@ -536,14 +612,18 @@ def main() -> int:
         rows = build_rows(
             afm_grouped,
             transmittance,
+            args.geometry,
             args.radius_proxy,
             args.effe_proxy,
             args.thickness_proxy,
         )
 
         args.outdir.mkdir(parents=True, exist_ok=True)
-        csv_path = args.outdir / f"{args.basename}.csv"
-        dat_path = args.outdir / f"{args.basename}.dat"
+        basename = args.basename
+        if args.geometry != "spheres" and basename == "model_input":
+            basename = f"{basename}__geom={args.geometry}"
+        csv_path = args.outdir / f"{basename}.csv"
+        dat_path = args.outdir / f"{basename}.dat"
 
         write_csv(rows, csv_path, CSV_FIELDNAMES)
         write_model_input_dat(rows, dat_path)

@@ -160,6 +160,29 @@ std::string effective_medium_geometry_name(EffectiveMediumGeometry geometry)
     throw std::runtime_error("Unhandled effective-medium geometry enum");
 }
 
+void validate_row_geometry_contract(const nublar::ExperimentalRow& row,
+                                    EffectiveMediumModel model,
+                                    EffectiveMediumGeometry requested_geometry)
+{
+    const std::string requested_geometry_name =
+        effective_medium_geometry_name(requested_geometry);
+
+    if (row.effective_medium_geometry != requested_geometry_name) {
+        throw std::runtime_error(
+            "Manifest geometry mismatch for time_s=" + std::to_string(row.time_s)
+            + ": manifest declares geometry=" + row.effective_medium_geometry
+            + " but runtime requested --geometry " + requested_geometry_name + ".");
+    }
+
+    if (model == EffectiveMediumModel::Mmgm
+        && row.supports_mmgm_geometry != requested_geometry_name) {
+        throw std::runtime_error(
+            "MMGM geometry contract mismatch for time_s=" + std::to_string(row.time_s)
+            + ": manifest supports MMGM geometry=" + row.supports_mmgm_geometry
+            + " but runtime requested --geometry " + requested_geometry_name + ".");
+    }
+}
+
 EffectiveMediumMorphology effective_medium_morphology(
     EffectiveMediumGeometry geometry,
     std::complex<double> eps_metal,
@@ -600,12 +623,6 @@ std::complex<double> evaluate_effective_permittivity(
         }
 
         case EffectiveMediumModel::Mmgm:
-            if (geometry == EffectiveMediumGeometry::Holes) {
-                throw std::runtime_error(
-                    "MMGM geometry=holes is not implemented: the current MMGM path still "
-                    "uses AFM-derived metal-island radius/distribution inputs, so inverting "
-                    "host/inclusion would not be a physically consistent holes model.");
-            }
             return nublar::mmgm_effective_permittivity(
                 row.rave_nm,
                 morphology.inclusion_eps,
@@ -634,6 +651,8 @@ void write_spectrum(const std::string& project_root,
                     double eta,
                     double xi)
 {
+    validate_row_geometry_contract(row, effective_medium_model, effective_medium_geometry);
+
     const std::filesystem::path output_path = output_path_for_time(
         project_root, row.time_s, effective_medium_model, effective_medium_geometry);
     std::filesystem::create_directories(output_path.parent_path());
@@ -655,6 +674,10 @@ void write_spectrum(const std::string& project_root,
         << effective_medium_model_name(effective_medium_model) << "\n";
     out << "# effective_medium_geometry "
         << effective_medium_geometry_name(effective_medium_geometry) << "\n";
+    out << "# manifest_effective_medium_geometry " << row.effective_medium_geometry << "\n";
+    out << "# manifest_inclusion_morphology_kind " << row.inclusion_morphology_kind << "\n";
+    out << "# manifest_thickness_morphology_kind " << row.thickness_morphology_kind << "\n";
+    out << "# manifest_supports_mmgm_geometry " << row.supports_mmgm_geometry << "\n";
     if (override_effe.has_value()) {
         out << "# override_effe " << *override_effe << "\n";
     }

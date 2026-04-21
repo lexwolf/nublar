@@ -59,6 +59,9 @@ FIELDS = [
     "std_equivalent_radius_nm",
     "number_density_per_um2",
     "island_count",
+    "hole_count",
+    "mean_hole_equivalent_radius_nm",
+    "hole_number_density_per_um2",
     "mean_island_height_nm",
 ]
 
@@ -80,7 +83,7 @@ def build_rows(grouped: dict[int, list[dict[str, float | str]]]) -> list[dict[st
             "sources": ";".join(sorted(e["_source"] for e in entries)),
         }
         for field in FIELDS:
-            vals = [float(e[field]) for e in entries]
+            vals = [float(e.get(field, 0.0)) for e in entries]
             mu, sigma = mean_std(vals)
             row[field] = mu
             row[f"{field}_std"] = sigma
@@ -116,6 +119,12 @@ CSV_FIELDNAMES = [
     "derived_reff_nm_std",
     "island_count",
     "island_count_std",
+    "hole_count",
+    "hole_count_std",
+    "mean_hole_equivalent_radius_nm",
+    "mean_hole_equivalent_radius_nm_std",
+    "hole_number_density_per_um2",
+    "hole_number_density_per_um2_std",
     "mean_island_height_nm",
     "mean_island_height_nm_std",
 ]
@@ -127,6 +136,8 @@ def write_dat(rows: list[dict[str, Any]], path: Path) -> None:
         "coverage coverage_std thickness_nm thickness_std "
         "mean_radius_nm mean_radius_std radius_sigma_nm radius_sigma_std "
         "density_um2 density_um2_std derived_reff_nm derived_reff_nm_std island_count island_count_std "
+        "hole_count hole_count_std mean_hole_radius_nm mean_hole_radius_std "
+        "hole_density_um2 hole_density_um2_std "
         "mean_height_nm mean_height_std\n"
     )
     lines = [
@@ -138,6 +149,9 @@ def write_dat(rows: list[dict[str, Any]], path: Path) -> None:
             "{number_density_per_um2:.10g} {number_density_per_um2_std:.10g} "
             "{derived_reff_nm:.10g} {derived_reff_nm_std:.10g} "
             "{island_count:.10g} {island_count_std:.10g} "
+            "{hole_count:.10g} {hole_count_std:.10g} "
+            "{mean_hole_equivalent_radius_nm:.10g} {mean_hole_equivalent_radius_nm_std:.10g} "
+            "{hole_number_density_per_um2:.10g} {hole_number_density_per_um2_std:.10g} "
             "{mean_island_height_nm:.10g} {mean_island_height_nm_std:.10g}\n"
         ).format(**row)
         for row in rows
@@ -167,6 +181,9 @@ set xlabel "Deposition time (s)"
 # 12 density_um2_std
 # 13 derived_reff_nm
 # 14 derived_reff_nm_std
+# 17 hole_count
+# 19 mean_hole_radius_nm
+# 21 hole_density_um2
 
 set ylabel "Coverage fraction"
 plot "{dat_name}" using 1:3:4 title "coverage"
@@ -179,6 +196,9 @@ plot "{dat_name}" using 1:7:8 title "mean radius"
 
 set ylabel "Number density (1/um^2)"
 plot "{dat_name}" using 1:11:12 title "density"
+
+set ylabel "Mean hole radius (nm)"
+plot "{dat_name}" using 1:19:20 title "mean hole radius"
 
 unset multiplot
 '''

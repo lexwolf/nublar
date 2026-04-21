@@ -46,7 +46,7 @@ def main() -> int:
     aggregate: dict[str, Any] = {"files": []}
 
     for stp_file in args.stp_files:
-        summary, islands, arrays = process_stp(
+        summary, islands, holes, arrays = process_stp(
             stp_file,
             sigma_factor=args.sigma_factor,
             min_pixels=args.min_pixels,
@@ -57,6 +57,7 @@ def main() -> int:
         payload = {
             "summary": asdict(summary),
             "islands": [asdict(r) for r in islands],
+            "holes": [asdict(r) for r in holes],
         }
         json_path = args.outdir / f"{stem}_features.json"
         json_path.write_text(json.dumps(json_safe(payload), indent=2), encoding="utf-8")

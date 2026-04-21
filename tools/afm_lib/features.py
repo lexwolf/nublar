@@ -32,6 +32,16 @@ class IslandRecord:
 
 
 @dataclass
+class HoleRecord:
+    label: int
+    area_px: int
+    area_um2: float
+    equivalent_radius_nm: float
+    centroid_x_um: float
+    centroid_y_um: float
+
+
+@dataclass
 class MapSummary:
     path: str
     rows: int
@@ -52,11 +62,15 @@ class MapSummary:
     threshold_sigma: float
     coverage_fraction: float
     island_count: int
+    hole_count: int
     number_density_per_um2: float
+    hole_number_density_per_um2: float
     equivalent_thickness_nm: float
     mean_island_height_nm: float
     mean_equivalent_radius_nm: float
     std_equivalent_radius_nm: float
+    mean_hole_equivalent_radius_nm: float
+    std_hole_equivalent_radius_nm: float
     mean_p95_height_nm: float
     mean_height_equivalent_radius_nm: float
     mean_p95_height_equivalent_radius_nm: float
@@ -153,6 +167,62 @@ def extract_islands(
     return records
 
 
+def extract_holes(
+    mask: np.ndarray,
+    dx_nm: float,
+    dy_nm: float,
+    min_pixels: int,
+) -> list[HoleRecord]:
+    """Extract per-hole lateral morphology from the complement of the metal mask.
+
+    Hole geometry is defined as interior connected components of the air phase,
+    i.e. complement components that do not touch the image boundary. Boundary-touching
+    complement regions correspond to the exterior/background rather than enclosed holes.
+    """
+    complement = ~mask
+    labels, nlab = connected_components(complement)
+    if nlab == 0:
+        return []
+
+    boundary_labels = set(np.unique(np.concatenate([
+        labels[0, :],
+        labels[-1, :],
+        labels[:, 0],
+        labels[:, -1],
+    ])))
+    boundary_labels.discard(0)
+
+    pixel_area_nm2 = dx_nm * dy_nm
+    yy, xx = np.indices(mask.shape)
+    records: list[HoleRecord] = []
+
+    for lab in range(1, nlab + 1):
+        if lab in boundary_labels:
+            continue
+
+        sel = labels == lab
+        area_px = int(np.count_nonzero(sel))
+        if area_px < min_pixels:
+            continue
+
+        area_nm2 = area_px * pixel_area_nm2
+        cy_px = float(np.mean(yy[sel]))
+        cx_px = float(np.mean(xx[sel]))
+
+        records.append(
+            HoleRecord(
+                label=lab,
+                area_px=area_px,
+                area_um2=float(area_nm2 / 1e6),
+                equivalent_radius_nm=equivalent_radius_nm_from_area(area_nm2),
+                centroid_x_um=float(cx_px * dx_nm / 1000.0),
+                centroid_y_um=float(cy_px * dy_nm / 1000.0),
+            )
+        )
+
+    return records
+
+
 def build_summary(
     path: Path,
     z: np.ndarray,
@@ -164,6 +234,7 @@ def build_summary(
     threshold_nm: float,
     threshold_sigma: float,
     islands: list[IslandRecord],
+    holes: list[HoleRecord],
     mask: np.ndarray,
 ) -> MapSummary:
     """Build the map-level AFM morphology summary."""
@@ -174,6 +245,7 @@ def build_summary(
     eq_thickness_nm = equivalent_thickness_nm_from_volume(total_volume_nm3, total_scan_area_nm2)
 
     radii = np.array([record.equivalent_radius_nm for record in islands], dtype=float)
+    hole_radii = np.array([record.equivalent_radius_nm for record in holes], dtype=float)
     heights = np.array([record.mean_height_nm for record in islands], dtype=float)
     p95_heights = np.array([record.p95_height_nm for record in islands], dtype=float)
     height_equiv_radii = np.array(
@@ -210,11 +282,15 @@ def build_summary(
         threshold_sigma=float(threshold_sigma),
         coverage_fraction=coverage_fraction,
         island_count=len(islands),
+        hole_count=len(holes),
         number_density_per_um2=(len(islands) / scan_area_um2) if scan_area_um2 > 0 else 0.0,
+        hole_number_density_per_um2=(len(holes) / scan_area_um2) if scan_area_um2 > 0 else 0.0,
         equivalent_thickness_nm=eq_thickness_nm,
         mean_island_height_nm=float(np.mean(heights)) if heights.size else 0.0,
         mean_equivalent_radius_nm=float(np.mean(radii)) if radii.size else 0.0,
         std_equivalent_radius_nm=float(np.std(radii)) if radii.size else 0.0,
+        mean_hole_equivalent_radius_nm=float(np.mean(hole_radii)) if hole_radii.size else 0.0,
+        std_hole_equivalent_radius_nm=float(np.std(hole_radii)) if hole_radii.size else 0.0,
         mean_p95_height_nm=float(np.mean(p95_heights)) if p95_heights.size else 0.0,
         mean_height_equivalent_radius_nm=float(np.mean(height_equiv_radii)) if height_equiv_radii.size else 0.0,
         mean_p95_height_equivalent_radius_nm=float(np.mean(p95_height_equiv_radii))
@@ -231,7 +307,7 @@ def process_stp(
     path: Path,
     sigma_factor: float,
     min_pixels: int,
-) -> tuple[MapSummary, list[IslandRecord], dict[str, np.ndarray]]:
+) -> tuple[MapSummary, list[IslandRecord], list[HoleRecord], dict[str, np.ndarray]]:
     """Run the current AFM feature pipeline on one STP file."""
     stp = load_stp(path)
     z_raw = np.array(stp["z"], dtype=float)
@@ -251,6 +327,7 @@ def process_stp(
     y_size_um = float(stp["scan"]["y_size"])
 
     islands = extract_islands(z_rel, mask, dx_nm=dx_nm, dy_nm=dy_nm)
+    holes = extract_holes(mask, dx_nm=dx_nm, dy_nm=dy_nm, min_pixels=min_pixels)
     summary = build_summary(
         path=path,
         z=z_raw,
@@ -262,6 +339,7 @@ def process_stp(
         threshold_nm=threshold_nm,
         threshold_sigma=threshold_sigma,
         islands=islands,
+        holes=holes,
         mask=mask,
     )
 
@@ -272,4 +350,4 @@ def process_stp(
         "z_rel": z_rel,
         "mask": mask.astype(np.uint8),
     }
-    return summary, islands, arrays
+    return summary, islands, holes, arrays
