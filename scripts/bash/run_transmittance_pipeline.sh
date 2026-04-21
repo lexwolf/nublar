@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 RAVE_PROXY="volume_equivalent_radius_nm"
 EFFE_PROXY="hybrid_alpha50"
+THICKNESS_PROXY="equivalent_thickness_nm"
 COMPILE=0
 MODEL_INPUT="data/input/experimental/model_input.dat"
 COMMON_DATASET="data/output/transmittance/common_transmittance_manifest.dat"
@@ -30,6 +31,9 @@ Options:
   --effe-proxy NAME
       Effe proxy passed to tools/build_experimental_input.py
       Default: $EFFE_PROXY
+  --thickness-proxy NAME
+      Thickness proxy passed to tools/build_experimental_input.py
+      Default: $THICKNESS_PROXY
   -c, --compile
       Force recompilation of bin/transmittance before execution
   --model-input PATH
@@ -72,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --effe-proxy)
       EFFE_PROXY="$2"
+      shift 2
+      ;;
+    --thickness-proxy)
+      THICKNESS_PROXY="$2"
       shift 2
       ;;
     -c|--compile)
@@ -130,6 +138,7 @@ echo "==> Building experimental input"
 python3 tools/build_experimental_input.py \
   --radius-proxy "$RAVE_PROXY" \
   --effe-proxy "$EFFE_PROXY" \
+  --thickness-proxy "$THICKNESS_PROXY" \
   --outdir "$(dirname "$MODEL_INPUT")" \
   --basename "$(basename "${MODEL_INPUT%.*}")"
 
@@ -164,6 +173,7 @@ echo "Pipeline complete."
 echo "  model input:     $MODEL_INPUT"
 echo "  common dataset:  $COMMON_DATASET"
 echo "  spectra dir:     data/output/transmittance"
+echo "  thickness proxy: $THICKNESS_PROXY"
 echo "  eta:             $ETA"
 echo "  xi:              $XI"
 echo "  gnuplot script:  $PLOT_SCRIPT"

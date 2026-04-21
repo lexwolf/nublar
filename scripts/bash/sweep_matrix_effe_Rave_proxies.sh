@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+THICKNESS_PROXY="equivalent_thickness_nm"
+
 EFFE_PROXIES=(
   coverage_fraction
   eq_thickness_over_mean_height
@@ -34,6 +36,39 @@ GLASS_THICKNESS_NM="1100000.0"
 INCLUDE_INCOHERENT_MULTIPLES="1"
 ETA="1.0"
 XI="1.0"
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+Sweep effe / radius proxy combinations and generate permittivity and transmittance outputs.
+
+Options:
+  --thickness-proxy NAME
+      Thickness proxy passed to tools/build_experimental_input.py
+      Default: $THICKNESS_PROXY
+  -h, --help
+      Show this help message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --thickness-proxy)
+      THICKNESS_PROXY="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 IMG_DIR="img/output/proxy_matrix"
 DATA_DIR="data/output/proxy_matrix"
@@ -103,7 +138,10 @@ for effe_proxy in "${EFFE_PROXIES[@]}"; do
   for radius_proxy in "${RADIUS_PROXIES[@]}"; do
     echo "==> Matrix sweep effe=$effe_proxy radius=$radius_proxy"
 
-    python3 tools/build_experimental_input.py --effe-proxy "$effe_proxy" --radius-proxy "$radius_proxy"
+    python3 tools/build_experimental_input.py \
+      --effe-proxy "$effe_proxy" \
+      --radius-proxy "$radius_proxy" \
+      --thickness-proxy "$THICKNESS_PROXY"
     if ! ./bin/effective_eps; then
       echo "WARNING: effective_eps failed for effe=$effe_proxy radius=$radius_proxy, writing placeholder spectra" >&2
       generate_placeholder_effective_eps
