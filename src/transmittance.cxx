@@ -9,13 +9,10 @@
 #include <string>
 #include <vector>
 
-#include <nano_geo_matrix/quasi_static/geometry/single.hpp>
-#define CUP_BACKEND_QUASI_STATIC
-#include <cup.hpp>
-
 #include "effective_medium.hpp"
 #include "nano_island_permittivity.hpp"
 #include "project_paths.hpp"
+#include "transmittance_workflow.hpp"
 
 /*
 Example compilation:
@@ -455,18 +452,19 @@ void write_spectrum(const std::string& project_root,
             continue;
         }
 
-        const std::complex<double> eps_metal = metal_sphere.metal(omega_ev);
+        const std::complex<double> eps_metal =
+            nublar::workflow_silver_permittivity(metal_sphere, omega_ev);
         const double effe_scaled = xi * row.effe;
         const std::complex<double> eps_eff = nublar::mmgm_effective_permittivity(
             row.rave_nm, eps_metal, host_eps, wavelength_nm, effe_scaled, row);
 
-        dielectric_sphere.set_dielectric("ito", "spline", "unical");
-        const std::complex<double> eps_ito = dielectric_sphere.dielectric(omega_ev);
+        const std::complex<double> eps_ito =
+            nublar::workflow_dielectric_permittivity(dielectric_sphere, "ito", omega_ev);
+        const std::complex<double> eps_glass =
+            nublar::workflow_dielectric_permittivity(dielectric_sphere, "glass", omega_ev);
 
-        dielectric_sphere.set_dielectric("glass", "spline", "unical");
-        const std::complex<double> eps_glass = dielectric_sphere.dielectric(omega_ev);
-
-        const std::complex<double> n_air = principal_refractive_index(std::complex<double>(host_eps, 0.0));
+        const std::complex<double> n_air = principal_refractive_index(
+            nublar::workflow_air_permittivity(host_eps));
         const std::complex<double> n_glass = principal_refractive_index(eps_glass);
         const double d_eff_nm = eta * row.thickness_nm;
 
@@ -550,39 +548,18 @@ int main(int argc, char* argv[])
 
         std::vector<nublar::ExperimentalRow> rows = nublar::read_manifest(manifest_path);
 
-        const nublar::OmegaRange omega_metal = nublar::read_omega_range_from_material_table(
-            std::filesystem::path(project_root)
-            / "extern/nano_geo_matrix/modules/cup/data/materials/metals/silverUNICALeV.dat");
-        const nublar::OmegaRange omega_ito = nublar::read_omega_range_from_material_table(
-            std::filesystem::path(project_root)
-            / "extern/nano_geo_matrix/modules/cup/data/materials/dielectrics/itoUNICALeV.dat");
-        const nublar::OmegaRange omega_glass = nublar::read_omega_range_from_material_table(
-            std::filesystem::path(project_root)
-            / "extern/nano_geo_matrix/modules/cup/data/materials/dielectrics/glassUNICALeV.dat");
+        const nublar::OmegaRange omega_range =
+            nublar::read_transmittance_workflow_omega_range(project_root);
 
-        const nublar::OmegaRange omega_range{
-            std::max({omega_metal.min_ev, omega_ito.min_ev, omega_glass.min_ev}),
-            std::min({omega_metal.max_ev, omega_ito.max_ev, omega_glass.max_ev})
-        };
-
-        if (omega_range.min_ev >= omega_range.max_ev) {
-            throw std::runtime_error("No common omega range among silver / ITO / glass tables.");
-        }
-
-        nanosphere metal_sphere;
-        metal_sphere.init();
-        metal_sphere.set_metal("silver", "spline", 0, "unical");
-        const double host_eps = metal_sphere.set_host("air");
-
-        nanosphere dielectric_sphere;
-        dielectric_sphere.init();
+        nublar::WorkflowDielectricModels models =
+            nublar::make_transmittance_workflow_dielectric_models();
 
         for (const nublar::ExperimentalRow& row : rows) {
             write_spectrum(project_root,
                            row,
-                           metal_sphere,
-                           dielectric_sphere,
-                           host_eps,
+                           models.metal_sphere,
+                           models.dielectric_sphere,
+                           models.host_eps,
                            omega_range,
                            ito_thickness_nm,
                            glass_thickness_nm,

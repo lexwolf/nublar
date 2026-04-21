@@ -8,13 +8,10 @@
 #include <string>
 #include <vector>
 
-#include <nano_geo_matrix/quasi_static/geometry/single.hpp>
-#define CUP_BACKEND_QUASI_STATIC
-#include <cup.hpp>
-
 #include "effective_medium.hpp"
 #include "nano_island_permittivity.hpp"
 #include "project_paths.hpp"
+#include "transmittance_workflow.hpp"
 
 /*
 Example compilation:
@@ -69,7 +66,8 @@ void write_spectrum(const std::string& project_root,
             continue;
         }
 
-        const std::complex<double> eps_metal = sphere.metal(omega_ev);
+        const std::complex<double> eps_metal =
+            nublar::workflow_silver_permittivity(sphere, omega_ev);
         const std::complex<double> eps_cm = nublar::MaxwellGarnett(row.effe, eps_metal, host_eps);
         const std::complex<double> eps_mmgm = nublar::mmgm_effective_permittivity(
             row.rave_nm, eps_metal, host_eps, wavelength_nm, row.effe, row);
@@ -99,13 +97,11 @@ int main(int argc, char* argv[])
             std::filesystem::path(project_root)
             / "extern/nano_geo_matrix/modules/cup/data/materials/metals/silverUNICALeV.dat");
 
-        nanosphere sphere;
-        sphere.init();
-        sphere.set_metal("silver", "spline", 0, "unical");
-        const double host_eps = sphere.set_host("air");
+        nublar::WorkflowDielectricModels models =
+            nublar::make_transmittance_workflow_dielectric_models();
 
         for (const nublar::ExperimentalRow& row : rows) {
-            write_spectrum(project_root, row, sphere, host_eps, omega_range);
+            write_spectrum(project_root, row, models.metal_sphere, models.host_eps, omega_range);
         }
 
         return 0;
