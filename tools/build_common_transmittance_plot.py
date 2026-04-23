@@ -35,8 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-input",
         type=Path,
-        default=Path("data/input/experimental/model_input.dat"),
-        help="Experimental model input manifest (default: data/input/experimental/model_input.dat)",
+        default=None,
+        help="Legacy experimental model input manifest",
+    )
+    parser.add_argument(
+        "--model-manifest",
+        type=Path,
+        default=Path("data/input/experimental/transmittance_models.dat"),
+        help="JSON-model sidecar manifest from tools/build_transmittance_models.py",
     )
     parser.add_argument(
         "--gnuplot-out",
@@ -57,6 +63,41 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
+
+
+def parse_model_manifest(path: Path) -> list[ModelInputRow]:
+    if not path.exists():
+        raise CommonTransmittancePlotError(f"Missing JSON model manifest: {path}")
+
+    header_fields: list[str] | None = None
+    rows: list[ModelInputRow] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            if header_fields is None:
+                header_fields = stripped[1:].strip().split()
+            continue
+
+        if header_fields is None:
+            raise CommonTransmittancePlotError(f"Missing header row in model manifest: {path}")
+        parts = stripped.split()
+        if len(parts) < len(header_fields):
+            raise CommonTransmittancePlotError(f"Malformed row in model manifest: {line}")
+        record = dict(zip(header_fields, parts, strict=True))
+        rows.append(
+            ModelInputRow(
+                time_s=int(record["time_s"]),
+                lamin_nm=float(record["experimental_lamin_nm"]),
+                lamax_nm=float(record["experimental_lamax_nm"]),
+                transmittance_dat=Path(record["experimental_dat"]),
+            )
+        )
+
+    if not rows:
+        raise CommonTransmittancePlotError(f"No data rows found in manifest: {path}")
+    return rows
 
 
 def parse_model_input(path: Path) -> list[ModelInputRow]:
@@ -140,7 +181,7 @@ def build_plot_script(rows: list[ModelInputRow], png_out: Path) -> str:
 
 def main() -> int:
     args = parse_args()
-    rows = parse_model_input(args.model_input)
+    rows = parse_model_input(args.model_input) if args.model_input else parse_model_manifest(args.model_manifest)
     script = build_plot_script(rows, args.png_out)
     write_text(args.gnuplot_out, script)
     print(f"Wrote: {args.gnuplot_out}")

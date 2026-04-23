@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "effective_medium.hpp"
+#include "model_input_json.hpp"
 #include "nano_island_permittivity.hpp"
 #include "project_paths.hpp"
 #include "transmittance_workflow.hpp"
@@ -103,36 +104,11 @@ struct EffectiveMediumState {
     double max_bruggeman_geometry_difference = 0.0;
 };
 
-EffectiveMediumModel parse_effective_medium_model(const std::string& value)
-{
-    if (value == "mg") {
-        return EffectiveMediumModel::MaxwellGarnett;
-    }
-    if (value == "bruggeman") {
-        return EffectiveMediumModel::Bruggeman;
-    }
-    if (value == "mmgm") {
-        return EffectiveMediumModel::Mmgm;
-    }
-
-    throw std::runtime_error(
-        "Unknown effective-medium model '" + value
-        + "'. Options are: mg, bruggeman, mmgm.");
-}
-
-EffectiveMediumGeometry parse_effective_medium_geometry(const std::string& value)
-{
-    if (value == "spheres") {
-        return EffectiveMediumGeometry::Spheres;
-    }
-    if (value == "holes") {
-        return EffectiveMediumGeometry::Holes;
-    }
-
-    throw std::runtime_error(
-        "Unknown geometry '" + value
-        + "'. Options are: spheres, holes.");
-}
+struct MaterialCache {
+    nanosphere metal_sphere;
+    nanosphere dielectric_sphere;
+    double host_eps = 0.0;
+};
 
 std::string effective_medium_model_name(EffectiveMediumModel model)
 {
@@ -160,27 +136,28 @@ std::string effective_medium_geometry_name(EffectiveMediumGeometry geometry)
     throw std::runtime_error("Unhandled effective-medium geometry enum");
 }
 
-void validate_row_geometry_contract(const nublar::ExperimentalRow& row,
-                                    EffectiveMediumModel model,
-                                    EffectiveMediumGeometry requested_geometry)
+EffectiveMediumModel to_effective_medium_model(nublar::JsonEffectiveMediumModel model)
 {
-    const std::string requested_geometry_name =
-        effective_medium_geometry_name(requested_geometry);
-
-    if (row.effective_medium_geometry != requested_geometry_name) {
-        throw std::runtime_error(
-            "Manifest geometry mismatch for time_s=" + std::to_string(row.time_s)
-            + ": manifest declares geometry=" + row.effective_medium_geometry
-            + " but runtime requested --geometry " + requested_geometry_name + ".");
+    switch (model) {
+        case nublar::JsonEffectiveMediumModel::MaxwellGarnett:
+            return EffectiveMediumModel::MaxwellGarnett;
+        case nublar::JsonEffectiveMediumModel::Bruggeman:
+            return EffectiveMediumModel::Bruggeman;
+        case nublar::JsonEffectiveMediumModel::Mmgm:
+            return EffectiveMediumModel::Mmgm;
     }
+    throw std::runtime_error("Unhandled JSON effective-medium model enum");
+}
 
-    if (model == EffectiveMediumModel::Mmgm
-        && row.supports_mmgm_geometry != requested_geometry_name) {
-        throw std::runtime_error(
-            "MMGM geometry contract mismatch for time_s=" + std::to_string(row.time_s)
-            + ": manifest supports MMGM geometry=" + row.supports_mmgm_geometry
-            + " but runtime requested --geometry " + requested_geometry_name + ".");
+EffectiveMediumGeometry to_effective_medium_geometry(nublar::JsonEffectiveMediumGeometry geometry)
+{
+    switch (geometry) {
+        case nublar::JsonEffectiveMediumGeometry::Spheres:
+            return EffectiveMediumGeometry::Spheres;
+        case nublar::JsonEffectiveMediumGeometry::Holes:
+            return EffectiveMediumGeometry::Holes;
     }
+    throw std::runtime_error("Unhandled JSON effective-medium geometry enum");
 }
 
 EffectiveMediumMorphology effective_medium_morphology(
@@ -204,23 +181,6 @@ EffectiveMediumMorphology effective_medium_morphology(
     }
 
     throw std::runtime_error("Unhandled effective-medium geometry enum");
-}
-
-std::filesystem::path output_path_for_time(const std::string& project_root,
-                                           int time_s,
-                                           EffectiveMediumModel model,
-                                           EffectiveMediumGeometry geometry)
-{
-    const std::string basename = "silver_nanoisland_" + std::to_string(time_s) + "s";
-    const bool use_legacy_filename =
-        model == EffectiveMediumModel::Mmgm && geometry == EffectiveMediumGeometry::Spheres;
-    const std::string suffix = use_legacy_filename
-        ? ".dat"
-        : "__em=" + effective_medium_model_name(model)
-          + "__geom=" + effective_medium_geometry_name(geometry) + ".dat";
-    return std::filesystem::path(project_root)
-           / "data/output/transmittance"
-           / (basename + suffix);
 }
 
 double safe_real_or_nan(const std::complex<double>& z)
@@ -534,17 +494,16 @@ int run_toy_front_stack_diagnostic(const std::string& project_root)
 }
 
 std::complex<double> evaluate_effective_permittivity(
-    EffectiveMediumModel model,
-    EffectiveMediumGeometry geometry,
+    const nublar::JsonEffectiveMedium& config,
     EffectiveMediumState& state,
-    const nublar::ExperimentalRow& row,
     std::complex<double> eps_metal,
     std::complex<double> eps_air,
-    double wavelength_nm,
-    double effe_scaled)
+    double wavelength_nm)
 {
+    const EffectiveMediumModel model = to_effective_medium_model(config.model);
+    const EffectiveMediumGeometry geometry = to_effective_medium_geometry(config.geometry);
     const EffectiveMediumMorphology morphology =
-        effective_medium_morphology(geometry, eps_metal, eps_air, effe_scaled);
+        effective_medium_morphology(geometry, eps_metal, eps_air, config.filling_fraction);
 
     switch (model) {
         case EffectiveMediumModel::MaxwellGarnett:
@@ -574,16 +533,15 @@ std::complex<double> evaluate_effective_permittivity(
                 std::cerr << "[WARN] Bruggeman selected root has Im(eps_eff) = "
                           << eps_eff.imag()
                           << " at wavelength_nm = " << wavelength_nm
-                          << " for time_s = " << row.time_s
                           << " and morphology fraction = " << morphology.inclusion_fraction
                           << " while both constituents are passive"
                           << std::endl;
             }
 
             const EffectiveMediumMorphology spheres_morphology = effective_medium_morphology(
-                EffectiveMediumGeometry::Spheres, eps_metal, eps_air, effe_scaled);
+                EffectiveMediumGeometry::Spheres, eps_metal, eps_air, config.filling_fraction);
             const EffectiveMediumMorphology holes_morphology = effective_medium_morphology(
-                EffectiveMediumGeometry::Holes, eps_metal, eps_air, effe_scaled);
+                EffectiveMediumGeometry::Holes, eps_metal, eps_air, config.filling_fraction);
 
             const auto spheres_roots = nublar::BruggemanRoots(
                 spheres_morphology.inclusion_fraction,
@@ -623,76 +581,187 @@ std::complex<double> evaluate_effective_permittivity(
         }
 
         case EffectiveMediumModel::Mmgm:
+            {
+            nublar::ExperimentalRow row;
+            row.rave_nm = config.distribution.rave_nm;
+            if (config.distribution.type == nublar::JsonDistributionType::Lognormal) {
+                row.w1 = 1.0;
+                row.mu_l1 = config.distribution.mu_l;
+                row.sig_l1 = config.distribution.sig_l;
+                row.w2 = 0.0;
+                row.mu_l2 = config.distribution.mu_l;
+                row.sig_l2 = config.distribution.sig_l;
+            } else if (config.distribution.type == nublar::JsonDistributionType::TwoLognormal) {
+                row.w1 = config.distribution.w1;
+                row.mu_l1 = config.distribution.mu_l1;
+                row.sig_l1 = config.distribution.sig_l1;
+                row.w2 = config.distribution.w2;
+                row.mu_l2 = config.distribution.mu_l2;
+                row.sig_l2 = config.distribution.sig_l2;
+            } else {
+                throw std::runtime_error("MMGM requires distribution.type lognormal or two_lognormal");
+            }
             return nublar::mmgm_effective_permittivity(
-                row.rave_nm,
+                config.distribution.rave_nm,
                 morphology.inclusion_eps,
                 morphology.host_eps,
                 wavelength_nm,
                 morphology.inclusion_fraction,
                 row);
+            }
     }
 
     throw std::runtime_error("Unhandled effective-medium model enum");
 }
 
-void write_spectrum(const std::string& project_root,
-                    const nublar::ExperimentalRow& row,
-                    nanosphere& metal_sphere,
-                    nanosphere& dielectric_sphere,
-                    double host_eps,
-                    EffectiveMediumModel effective_medium_model,
-                    EffectiveMediumGeometry effective_medium_geometry,
-                    std::optional<double> override_effe,
-                    std::optional<double> override_thickness_nm,
-                    const nublar::OmegaRange& omega_range,
-                    double ito_thickness_nm,
-                    double glass_thickness_nm,
-                    bool include_incoherent_multiples,
-                    double eta,
-                    double xi)
+std::string normalize_material_name(const std::string& material)
 {
-    validate_row_geometry_contract(row, effective_medium_model, effective_medium_geometry);
+    if (material == "silverUNICALeV.dat" || material == "silver" || material == "silver_unical") {
+        return "silver";
+    }
+    if (material == "itoUNICALeV.dat" || material == "ito" || material == "ITO") {
+        return "ito";
+    }
+    if (material == "glassUNICALeV.dat" || material == "glass") {
+        return "glass";
+    }
+    if (material == "air") {
+        return "air";
+    }
+    throw std::runtime_error(
+        "Unsupported material '" + material
+        + "'. Supported values are air, silverUNICALeV.dat, itoUNICALeV.dat, glassUNICALeV.dat.");
+}
 
-    const std::filesystem::path output_path = output_path_for_time(
-        project_root, row.time_s, effective_medium_model, effective_medium_geometry);
+std::complex<double> material_permittivity(MaterialCache& materials,
+                                           const std::string& material,
+                                           double omega_ev)
+{
+    const std::string normalized = normalize_material_name(material);
+    if (normalized == "air") {
+        return nublar::workflow_air_permittivity(materials.host_eps);
+    }
+    if (normalized == "silver") {
+        return nublar::workflow_silver_permittivity(materials.metal_sphere, omega_ev);
+    }
+    return nublar::workflow_dielectric_permittivity(
+        materials.dielectric_sphere, normalized.c_str(), omega_ev);
+}
+
+std::filesystem::path resolve_output_path(const std::string& project_root,
+                                          const nublar::TransmittanceModelJson& model,
+                                          const std::optional<std::filesystem::path>& cli_output_path)
+{
+    if (cli_output_path.has_value()) {
+        return *cli_output_path;
+    }
+    if (!model.output.path.empty()) {
+        return model.output.path;
+    }
+    return std::filesystem::path(project_root)
+           / "data/output/transmittance"
+           / "sample.dat";
+}
+
+void validate_stack_contract(const nublar::TransmittanceModelJson& model)
+{
+    if (normalize_material_name(model.stack.incident_material) != "air") {
+        throw std::runtime_error("Only air is currently supported as stack.incident_medium.material");
+    }
+    if (normalize_material_name(model.stack.exit_material) != "air") {
+        throw std::runtime_error("Only air is currently supported as stack.exit_medium.material");
+    }
+
+    int effective_layers = 0;
+    int incoherent_layers = 0;
+    bool saw_incoherent = false;
+    for (const nublar::JsonLayer& layer : model.stack.layers) {
+        if (layer.kind == "effective_medium") {
+            ++effective_layers;
+        }
+        if (layer.coherence == "incoherent") {
+            ++incoherent_layers;
+            saw_incoherent = true;
+            if (layer.kind != "dielectric") {
+                throw std::runtime_error("Only dielectric layers may use coherence='incoherent'");
+            }
+        } else if (saw_incoherent) {
+            throw std::runtime_error("Coherent layers after an incoherent substrate are not supported");
+        }
+    }
+
+    if (effective_layers != 1) {
+        throw std::runtime_error("The stack must contain exactly one effective_medium layer");
+    }
+    if (incoherent_layers != 1) {
+        throw std::runtime_error(
+            "The current transmittance model requires exactly one incoherent dielectric substrate layer");
+    }
+}
+
+void write_spectrum(const std::string& project_root,
+                    const nublar::TransmittanceModelJson& model,
+                    const std::optional<std::filesystem::path>& cli_output_path)
+{
+    validate_stack_contract(model);
+
+    const std::filesystem::path output_path =
+        resolve_output_path(project_root, model, cli_output_path);
     std::filesystem::create_directories(output_path.parent_path());
-
     std::ofstream out(output_path);
     if (!out.is_open()) {
         throw std::runtime_error("Could not open output file: " + output_path.string());
     }
 
-    out << "# time_s " << row.time_s << "\n";
-    out << "# effe " << std::setprecision(16) << row.effe << "\n";
-    out << "# effe_scaled "
-        << (override_effe.has_value() ? *override_effe : (xi * row.effe)) << "\n";
-    out << "# Rave_nm " << row.rave_nm << "\n";
-    out << "# effective_thickness_nm " << row.thickness_nm << "\n";
-    out << "# eta " << eta << "\n";
-    out << "# xi " << xi << "\n";
+    MaterialCache materials;
+    materials.metal_sphere.init();
+    materials.metal_sphere.set_metal("silver", "spline", 0, "unical");
+    materials.host_eps = materials.metal_sphere.set_host("air");
+    materials.dielectric_sphere.init();
+
+    const nublar::OmegaRange omega_range =
+        nublar::read_transmittance_workflow_omega_range(project_root);
+
+    const nublar::JsonLayer* effective_layer = nullptr;
+    const nublar::JsonLayer* substrate_layer = nullptr;
+    for (const nublar::JsonLayer& layer : model.stack.layers) {
+        if (layer.kind == "effective_medium") {
+            effective_layer = &layer;
+        }
+        if (layer.coherence == "incoherent") {
+            substrate_layer = &layer;
+        }
+    }
+    if (effective_layer == nullptr || substrate_layer == nullptr) {
+        throw std::runtime_error("Internal stack validation failed");
+    }
+    if (normalize_material_name(effective_layer->effective_medium.metal_material) != "silver") {
+        throw std::runtime_error("Only silverUNICALeV.dat is currently supported as metal_material");
+    }
+    if (normalize_material_name(effective_layer->effective_medium.host_material) != "air") {
+        throw std::runtime_error("Only air is currently supported as effective_medium.host_material");
+    }
+
+    const EffectiveMediumModel effective_medium_model =
+        to_effective_medium_model(effective_layer->effective_medium.model);
+    const EffectiveMediumGeometry effective_medium_geometry =
+        to_effective_medium_geometry(effective_layer->effective_medium.geometry);
+
+    out << "# input_json_schema nublar_transmittance_model_v1\n";
+    out << "# wavelength_grid_nm "
+        << model.wavelength_grid.min_nm << " "
+        << model.wavelength_grid.max_nm << " "
+        << model.wavelength_grid.step_nm << "\n";
     out << "# effective_medium_model "
         << effective_medium_model_name(effective_medium_model) << "\n";
     out << "# effective_medium_geometry "
         << effective_medium_geometry_name(effective_medium_geometry) << "\n";
-    out << "# manifest_effective_medium_geometry " << row.effective_medium_geometry << "\n";
-    out << "# manifest_inclusion_morphology_kind " << row.inclusion_morphology_kind << "\n";
-    out << "# manifest_thickness_morphology_kind " << row.thickness_morphology_kind << "\n";
-    out << "# manifest_supports_mmgm_geometry " << row.supports_mmgm_geometry << "\n";
-    if (override_effe.has_value()) {
-        out << "# override_effe " << *override_effe << "\n";
-    }
-    if (override_thickness_nm.has_value()) {
-        out << "# override_thickness_nm " << *override_thickness_nm << "\n";
-    }
-    out << "# ito_thickness_nm " << ito_thickness_nm << "\n";
-    out << "# glass_thickness_nm " << glass_thickness_nm << "\n";
-    out << "# distribution two_lognormal "
-        << row.w1 << " " << row.mu_l1 << " " << row.sig_l1 << " "
-        << row.w2 << " " << row.mu_l2 << " " << row.sig_l2 << "\n";
-    out << "# omega_range_eV " << omega_range.min_ev << " " << omega_range.max_ev << "\n";
+    out << "# filling_fraction "
+        << std::setprecision(16) << effective_layer->effective_medium.filling_fraction << "\n";
+    out << "# effective_thickness_nm " << effective_layer->thickness_nm << "\n";
+    out << "# substrate_thickness_nm " << substrate_layer->thickness_nm << "\n";
     out << "# model coherent_front_plus_incoherent_glass\n";
-    out << "# incoherent_substrate_multiple_reflections "
-        << (include_incoherent_multiples ? 1 : 0) << "\n";
+    out << "# incoherent_substrate_multiple_reflections 1\n";
     out << "# columns: lambda_nm omega_eV "
         << "T_total T_front T_back A_glass R_front_air R_front_glass R_back "
         << "eps_eff_re eps_eff_im eps_ito_re eps_ito_im eps_glass_re eps_glass_im A_front\n";
@@ -700,8 +769,13 @@ void write_spectrum(const std::string& project_root,
     out << std::fixed << std::setprecision(10);
     EffectiveMediumState effective_medium_state;
 
-    for (int i = 0; i < row.n_lambda; ++i) {
-        const double wavelength_nm = row.lamin_nm + static_cast<double>(i) * row.dlam_nm;
+    const int n_lambda = static_cast<int>(
+        std::floor((model.wavelength_grid.max_nm - model.wavelength_grid.min_nm)
+                   / model.wavelength_grid.step_nm + 1e-9)) + 1;
+
+    for (int i = 0; i < n_lambda; ++i) {
+        const double wavelength_nm =
+            model.wavelength_grid.min_nm + static_cast<double>(i) * model.wavelength_grid.step_nm;
         const double omega_ev = nublar::wavelength_nm_to_omega_ev(wavelength_nm);
 
         if (omega_ev < omega_range.min_ev || omega_ev > omega_range.max_ev) {
@@ -716,37 +790,46 @@ void write_spectrum(const std::string& project_root,
         }
 
         const std::complex<double> eps_metal =
-            nublar::workflow_silver_permittivity(metal_sphere, omega_ev);
+            material_permittivity(materials, effective_layer->effective_medium.metal_material, omega_ev);
         const std::complex<double> eps_air =
-            nublar::workflow_air_permittivity(host_eps);
-        const double effe_scaled = override_effe.has_value()
-            ? *override_effe
-            : (xi * row.effe);
+            material_permittivity(materials, effective_layer->effective_medium.host_material, omega_ev);
         const std::complex<double> eps_eff = evaluate_effective_permittivity(
-            effective_medium_model,
-            effective_medium_geometry,
+            effective_layer->effective_medium,
             effective_medium_state,
-            row,
             eps_metal,
             eps_air,
-            wavelength_nm,
-            effe_scaled);
+            wavelength_nm);
 
-        const std::complex<double> eps_ito =
-            nublar::workflow_dielectric_permittivity(dielectric_sphere, "ito", omega_ev);
-        const std::complex<double> eps_glass =
-            nublar::workflow_dielectric_permittivity(dielectric_sphere, "glass", omega_ev);
+        std::vector<Layer> front_layers;
+        std::complex<double> eps_ito = {
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN(),
+        };
+        std::complex<double> eps_glass = {
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN(),
+        };
+
+        for (const nublar::JsonLayer& layer : model.stack.layers) {
+            if (layer.coherence == "incoherent") {
+                eps_glass = material_permittivity(materials, layer.material, omega_ev);
+                break;
+            }
+
+            if (layer.kind == "effective_medium") {
+                front_layers.push_back({eps_eff, layer.thickness_nm});
+            } else {
+                const std::complex<double> eps_layer =
+                    material_permittivity(materials, layer.material, omega_ev);
+                if (normalize_material_name(layer.material) == "ito") {
+                    eps_ito = eps_layer;
+                }
+                front_layers.push_back({eps_layer, layer.thickness_nm});
+            }
+        }
 
         const std::complex<double> n_air = principal_refractive_index(eps_air);
         const std::complex<double> n_glass = principal_refractive_index(eps_glass);
-        const double d_eff_nm = override_thickness_nm.has_value()
-            ? *override_thickness_nm
-            : (eta * row.thickness_nm);
-
-        const std::vector<Layer> front_layers = {
-            {eps_eff, d_eff_nm},
-            {eps_ito, ito_thickness_nm}
-        };
 
         const RtCoefficients front_from_air = coherent_stack_rt(
             n_air, front_layers, n_glass, wavelength_nm);
@@ -756,17 +839,16 @@ void write_spectrum(const std::string& project_root,
 
         const RtCoefficients back_interface = interface_rt(n_glass, n_air);
 
-        const double A_glass = beer_attenuation_factor(n_glass, wavelength_nm, glass_thickness_nm);
+        const double A_glass = beer_attenuation_factor(
+            n_glass, wavelength_nm, substrate_layer->thickness_nm);
         const double A_front = 1.0 - front_from_air.R - front_from_air.T;
 
         double T_total = front_from_air.T * A_glass * back_interface.T;
-        if (include_incoherent_multiples) {
-            const double denom = 1.0 - front_from_glass.R * back_interface.R * A_glass * A_glass;
-            if (std::abs(denom) < 1e-14) {
-                T_total = std::numeric_limits<double>::quiet_NaN();
-            } else {
-                T_total /= denom;
-            }
+        const double denom = 1.0 - front_from_glass.R * back_interface.R * A_glass * A_glass;
+        if (std::abs(denom) < 1e-14) {
+            T_total = std::numeric_limits<double>::quiet_NaN();
+        } else {
+            T_total /= denom;
         }
 
         out << wavelength_nm << " "
@@ -791,7 +873,7 @@ void write_spectrum(const std::string& project_root,
             ? "[INFO]"
             : "[WARN]";
         std::cerr << level
-                  << " Bruggeman geometry invariance check for time_s=" << row.time_s
+                  << " Bruggeman geometry invariance check"
                   << ": max |eps_eff(spheres) - eps_eff(holes)| = "
                   << effective_medium_state.max_bruggeman_geometry_difference
                   << std::endl;
@@ -807,10 +889,7 @@ int main(int argc, char* argv[])
     try {
         const std::string project_root = nublar::resolve_project_root(argv[0]);
         bool toy_mode = false;
-        EffectiveMediumModel effective_medium_model = EffectiveMediumModel::Mmgm;
-        EffectiveMediumGeometry effective_medium_geometry = EffectiveMediumGeometry::Spheres;
-        std::optional<double> override_effe;
-        std::optional<double> override_thickness_nm;
+        std::optional<std::filesystem::path> output_path;
         std::vector<std::string> positional_args;
 
         for (int i = 1; i < argc; ++i) {
@@ -819,35 +898,11 @@ int main(int argc, char* argv[])
                 toy_mode = true;
                 continue;
             }
-            if (arg == "--effective-medium-model") {
+            if (arg == "--output") {
                 if (i + 1 >= argc) {
-                    throw std::runtime_error(
-                        "Missing value after --effective-medium-model. "
-                        "Options are: mg, bruggeman, mmgm.");
+                    throw std::runtime_error("Missing value after --output.");
                 }
-                effective_medium_model = parse_effective_medium_model(argv[++i]);
-                continue;
-            }
-            if (arg == "--geometry") {
-                if (i + 1 >= argc) {
-                    throw std::runtime_error(
-                        "Missing value after --geometry. Options are: spheres, holes.");
-                }
-                effective_medium_geometry = parse_effective_medium_geometry(argv[++i]);
-                continue;
-            }
-            if (arg == "--override-effe") {
-                if (i + 1 >= argc) {
-                    throw std::runtime_error("Missing value after --override-effe.");
-                }
-                override_effe = std::stod(argv[++i]);
-                continue;
-            }
-            if (arg == "--override-thickness-nm") {
-                if (i + 1 >= argc) {
-                    throw std::runtime_error("Missing value after --override-thickness-nm.");
-                }
-                override_thickness_nm = std::stod(argv[++i]);
+                output_path = std::filesystem::path(argv[++i]);
                 continue;
             }
             if (arg.rfind("--", 0) == 0) {
@@ -860,85 +915,18 @@ int main(int argc, char* argv[])
             return run_toy_front_stack_diagnostic(project_root);
         }
 
-        if (override_effe.has_value()) {
-            if (*override_effe < 0.0 || *override_effe > 1.0) {
-                throw std::runtime_error("--override-effe must be in [0, 1].");
-            }
-            if (effective_medium_model == EffectiveMediumModel::Mmgm) {
-                throw std::runtime_error(
-                    "--override-effe is only supported for mg and bruggeman effective-medium models.");
-            }
-        }
-        if (override_thickness_nm.has_value() && *override_thickness_nm <= 0.0) {
-            throw std::runtime_error("--override-thickness-nm must be positive.");
+        if (positional_args.size() > 1) {
+            throw std::runtime_error(
+                "Usage: transmittance [--output PATH] [--toy] [model.json]");
         }
 
-        const std::filesystem::path manifest_path = (!positional_args.empty())
+        const std::filesystem::path model_json_path = (!positional_args.empty())
             ? std::filesystem::path(positional_args[0])
-            : std::filesystem::path(project_root) / "data/input/experimental/model_input.dat";
+            : std::filesystem::path(project_root) / "data/input/sample.json";
 
-        // Optional positional overrides after the manifest path:
-        // [1] ITO thickness in nm          (default 0.0)
-        // [2] glass thickness in nm        (default 1.1e6 nm = 1.1 mm)
-        // [3] include incoherent multiples (default 1)
-        // [4] nanoisland effective thickness scaling eta (default 1.0)
-        // [5] effective filling fraction scaling xi (default 1.0)
-        const double ito_thickness_nm = (positional_args.size() >= 2)
-            ? std::stod(positional_args[1])
-            : 0.0;
-        const double glass_thickness_nm = (positional_args.size() >= 3)
-            ? std::stod(positional_args[2])
-            : 1.1e6;
-        const bool include_incoherent_multiples = (positional_args.size() >= 4)
-            ? (std::stoi(positional_args[3]) != 0)
-            : true;
-        double eta = 1.0;
-        if (positional_args.size() >= 5) {
-            eta = std::stod(positional_args[4]);
-        }
-        double xi = 1.0;
-        if (positional_args.size() >= 6) {
-            xi = std::stod(positional_args[5]);
-        }
-
-        std::cout << "[INFO] Effective medium model: "
-                  << effective_medium_model_name(effective_medium_model) << std::endl;
-        std::cout << "[INFO] Geometry: "
-                  << effective_medium_geometry_name(effective_medium_geometry) << std::endl;
-        if (override_effe.has_value()) {
-            std::cout << "[INFO] Override effe: " << *override_effe << std::endl;
-        }
-        if (override_thickness_nm.has_value()) {
-            std::cout << "[INFO] Override thickness (nm): " << *override_thickness_nm << std::endl;
-        }
-        std::cerr << "[INFO] Using thickness scaling eta = " << eta << std::endl;
-        std::cerr << "[INFO] Using filling-fraction scaling xi = " << xi << std::endl;
-
-        std::vector<nublar::ExperimentalRow> rows = nublar::read_manifest(manifest_path);
-
-        const nublar::OmegaRange omega_range =
-            nublar::read_transmittance_workflow_omega_range(project_root);
-
-        nublar::WorkflowDielectricModels models =
-            nublar::make_transmittance_workflow_dielectric_models();
-
-        for (const nublar::ExperimentalRow& row : rows) {
-            write_spectrum(project_root,
-                           row,
-                           models.metal_sphere,
-                           models.dielectric_sphere,
-                           models.host_eps,
-                           effective_medium_model,
-                           effective_medium_geometry,
-                           override_effe,
-                           override_thickness_nm,
-                           omega_range,
-                           ito_thickness_nm,
-                           glass_thickness_nm,
-                           include_incoherent_multiples,
-                           eta,
-                           xi);
-        }
+        const nublar::TransmittanceModelJson model =
+            nublar::read_transmittance_model_json(model_json_path);
+        write_spectrum(project_root, model, output_path);
 
         return 0;
     } catch (const std::exception& exc) {

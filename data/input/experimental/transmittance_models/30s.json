@@ -1,0 +1,54 @@
+{
+  "wavelength_grid_nm": {
+    "min": 300.0,
+    "max": 798.0,
+    "step": 3.0
+  },
+  "stack": {
+    "incident_medium": {
+      "material": "air"
+    },
+    "layers": [
+      {
+        "name": "nano_island_slab",
+        "kind": "effective_medium",
+        "thickness_nm": 0.7870367597947996,
+        "coherence": "coherent",
+        "effective_medium": {
+          "model": "mmgm",
+          "geometry": "spheres",
+          "filling_fraction": 0.1729698259681807,
+          "metal_material": "silverUNICALeV.dat",
+          "host_material": "air",
+          "distribution": {
+            "type": "two_lognormal",
+            "rave_nm": 36.903418464884204,
+            "w1": 0.6547645857681428,
+            "muL1": 3.1678659498576174,
+            "sigL1": 0.4208046371638447,
+            "w2": 0.3452354142318572,
+            "muL2": 3.853634813083293,
+            "sigL2": 0.6184283137286544
+          }
+        }
+      },
+      {
+        "name": "ITO",
+        "kind": "dielectric",
+        "thickness_nm": 0.0,
+        "material": "itoUNICALeV.dat",
+        "coherence": "coherent"
+      },
+      {
+        "name": "glass",
+        "kind": "dielectric",
+        "thickness_nm": 1100000.0,
+        "material": "glassUNICALeV.dat",
+        "coherence": "incoherent"
+      }
+    ],
+    "exit_medium": {
+      "material": "air"
+    }
+  }
+}

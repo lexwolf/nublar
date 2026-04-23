@@ -23,6 +23,7 @@ class ModelInputRow:
     lamin_nm: float
     lamax_nm: float
     transmittance_dat: Path
+    calculated_dat: Path | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,8 +36,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-input",
         type=Path,
-        default=Path("data/input/experimental/model_input.dat"),
-        help="Experimental model input manifest (default: data/input/experimental/model_input.dat)",
+        default=None,
+        help="Legacy experimental model input manifest",
+    )
+    parser.add_argument(
+        "--model-manifest",
+        type=Path,
+        default=Path("data/input/experimental/transmittance_models.dat"),
+        help=(
+            "JSON-model sidecar manifest from tools/build_transmittance_models.py. "
+            "When provided, this replaces --model-input for transmittance workflows."
+        ),
     )
     parser.add_argument(
         "--calculated-dir",
@@ -68,6 +78,46 @@ def parse_args() -> argparse.Namespace:
         help="Calculated-spectrum morphology convention (default: spheres)",
     )
     return parser.parse_args()
+
+
+def parse_model_manifest(path: Path) -> list[ModelInputRow]:
+    if not path.exists():
+        raise CommonTransmittanceDatasetError(f"Missing JSON model manifest: {path}")
+
+    header_fields: list[str] | None = None
+    rows: list[ModelInputRow] = []
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            if header_fields is None:
+                header_fields = stripped[1:].strip().split()
+            continue
+
+        if header_fields is None:
+            raise CommonTransmittanceDatasetError(f"Missing header row in model manifest: {path}")
+
+        parts = stripped.split()
+        if len(parts) < len(header_fields):
+            raise CommonTransmittanceDatasetError(f"Malformed row in model manifest: {line}")
+
+        record = dict(zip(header_fields, parts, strict=True))
+        rows.append(
+            ModelInputRow(
+                time_s=int(record["time_s"]),
+                sample_label=record["sample_label"],
+                lamin_nm=float(record["experimental_lamin_nm"]),
+                lamax_nm=float(record["experimental_lamax_nm"]),
+                transmittance_dat=Path(record["experimental_dat"]),
+                calculated_dat=Path(record["calculated_dat"]),
+            )
+        )
+
+    if not rows:
+        raise CommonTransmittanceDatasetError(f"No data rows found in: {path}")
+    return rows
 
 
 def parse_model_input(path: Path) -> list[ModelInputRow]:
@@ -136,7 +186,7 @@ def build_manifest_rows(
 
     manifest_rows: list[dict[str, object]] = []
     for row in sorted(rows, key=lambda item: item.time_s):
-        calculated_dat = calculated_spectrum_path(
+        calculated_dat = row.calculated_dat or calculated_spectrum_path(
             calculated_dir, row.time_s, effective_medium_model, geometry
         )
         manifest_rows.append(
@@ -177,7 +227,7 @@ def write_manifest_dat(rows: list[dict[str, object]], path: Path) -> None:
 
 def main() -> int:
     args = parse_args()
-    rows = parse_model_input(args.model_input)
+    rows = parse_model_input(args.model_input) if args.model_input else parse_model_manifest(args.model_manifest)
     manifest_rows = build_manifest_rows(
         rows, args.calculated_dir, args.effective_medium_model, args.geometry
     )

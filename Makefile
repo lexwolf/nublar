@@ -24,7 +24,7 @@ all: dirs $(CORE_TARGETS)
 dirs:
 	mkdir -p $(BIN_DIR)
 
-$(BIN_DIR)/transmittance: $(SRC_DIR)/transmittance.cxx extern/nano_geo_matrix/modules/cup/cup.hpp extern/nano_geo_matrix/include/nano_geo_matrix/bessel/myBessel.hpp
+$(BIN_DIR)/transmittance: $(SRC_DIR)/transmittance.cxx $(HEADER_DIR)/model_input_json.hpp extern/nano_geo_matrix/modules/cup/cup.hpp extern/nano_geo_matrix/include/nano_geo_matrix/bessel/myBessel.hpp
 	$(CXX) $(CXXFLAGS) -L/usr/local/lib $< -o $@ -lgsl -lcomplex_bessel -larmadillo $(LDFLAGS)
 
 $(BIN_DIR)/test_bruggeman: tests/test_bruggeman.cxx extern/nano_geo_matrix/modules/cup/cup.hpp extern/nano_geo_matrix/include/nano_geo_matrix/bessel/myBessel.hpp
