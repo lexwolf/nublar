@@ -24,7 +24,7 @@ std::filesystem::path data_output_path(const std::string& project_root)
 
 std::filesystem::path gnuplot_output_path(const std::string& project_root)
 {
-    return std::filesystem::path(project_root) / "scripts/gnuiplot/tests/test_bruggeman.gp";
+    return std::filesystem::path(project_root) / "scripts/gnuplot/tests/test_bruggeman.gp";
 }
 
 std::filesystem::path png_output_path(const std::string& project_root)
