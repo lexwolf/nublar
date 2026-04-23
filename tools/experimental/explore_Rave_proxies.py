@@ -75,7 +75,7 @@ def require_input(path: Path) -> None:
     if not path.exists():
         raise RaveProxyError(
             f"Input file not found: {path}\n"
-            "Please run python3 tools/build_experimental_input.py first."
+            "Please run python3 tools/experimental/build_experimental_input.py first."
         )
 
 

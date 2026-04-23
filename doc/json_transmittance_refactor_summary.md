@@ -16,7 +16,7 @@ The transmittance solver now treats a JSON model file as its only physics input.
   - filling fraction
   - MMGM radius distribution parameters
 - `model_input.dat` is no longer used by the transmittance solver.
-- `tools/build_transmittance_models.py` builds solver-facing JSON files directly from AFM-derived morphology summaries.
+- `tools/experimental/build_transmittance_models.py` builds solver-facing JSON files directly from AFM-derived morphology summaries.
 - `scripts/bash/run_transmittance_pipeline.sh` now runs:
 
 ```text

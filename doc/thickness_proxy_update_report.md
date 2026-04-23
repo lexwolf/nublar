@@ -2,7 +2,7 @@
 
 ## Modified Files
 
-- `tools/build_experimental_input.py`
+- `tools/experimental/build_experimental_input.py`
 - `scripts/bash/run_transmittance_pipeline.sh`
 
 ## Summary
@@ -53,7 +53,7 @@ Important implementation details:
 
 ## Thickness Logic Refactor
 
-Thickness computation was factored into a dedicated helper in `tools/build_experimental_input.py`:
+Thickness computation was factored into a dedicated helper in `tools/experimental/build_experimental_input.py`:
 
 ```python
 compute_thickness_proxy(
@@ -150,13 +150,13 @@ The rest of the framework was not broadly refactored.
 ### Default Backward-Compatible Path
 
 ```bash
-python3 tools/build_experimental_input.py
+python3 tools/experimental/build_experimental_input.py
 ```
 
 ### New Thickness Logic With Allowed `effe`
 
 ```bash
-python3 tools/build_experimental_input.py \
+python3 tools/experimental/build_experimental_input.py \
   --radius-proxy volume_equivalent_radius_nm \
   --thickness-proxy sphere_r95_diameter \
   --effe-proxy coverage_times_eq_over_hmean
@@ -174,7 +174,7 @@ scripts/bash/run_transmittance_pipeline.sh \
 ## Command That Now Fails Intentionally
 
 ```bash
-python3 tools/build_experimental_input.py \
+python3 tools/experimental/build_experimental_input.py \
   --radius-proxy volume_equivalent_radius_nm \
   --thickness-proxy sphere_r95_diameter \
   --effe-proxy eq_thickness_over_Rave
@@ -192,7 +192,7 @@ Expected outcome:
 Ran:
 
 ```bash
-python3 tools/build_experimental_input.py
+python3 tools/experimental/build_experimental_input.py
 ```
 
 Result:
@@ -204,7 +204,7 @@ Result:
 Ran:
 
 ```bash
-python3 tools/build_experimental_input.py \
+python3 tools/experimental/build_experimental_input.py \
   --radius-proxy volume_equivalent_radius_nm \
   --thickness-proxy sphere_r95_diameter \
   --effe-proxy coverage_times_eq_over_hmean
@@ -219,7 +219,7 @@ Result:
 Ran:
 
 ```bash
-python3 tools/build_experimental_input.py \
+python3 tools/experimental/build_experimental_input.py \
   --radius-proxy volume_equivalent_radius_nm \
   --thickness-proxy sphere_r95_diameter \
   --effe-proxy eq_thickness_over_Rave

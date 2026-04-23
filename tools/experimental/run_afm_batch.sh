@@ -12,7 +12,7 @@ MIN_PIXELS="20"
 usage() {
     cat <<EOF
 Usage:
-  ./tools/run_afm_batch.sh [--use-image] [--sigma-factor VAL] [--min-pixels N]
+  ./tools/experimental/run_afm_batch.sh [--use-image] [--sigma-factor VAL] [--min-pixels N]
 
 Options:
   --use-image         Use the processed '*Image 1*.stp' files instead of 001/002/003
@@ -97,7 +97,7 @@ for t in 10 20 30 40 50 60; do
 
     echo "Processing ${t}s (${MODE_TAG})..."
 
-    python3 tools/extract_afm_features.py \
+    python3 tools/experimental/extract_afm_features.py \
         "${FILES[@]}" \
         --sigma-factor "$SIGMA_FACTOR" \
         --min-pixels "$MIN_PIXELS" \

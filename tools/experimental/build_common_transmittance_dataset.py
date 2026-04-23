@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("data/input/experimental/transmittance_models.dat"),
         help=(
-            "JSON-model sidecar manifest from tools/build_transmittance_models.py. "
+            "JSON-model sidecar manifest from tools/experimental/build_transmittance_models.py. "
             "When provided, this replaces --model-input for transmittance workflows."
         ),
     )
@@ -123,7 +123,7 @@ def parse_model_manifest(path: Path) -> list[ModelInputRow]:
 def parse_model_input(path: Path) -> list[ModelInputRow]:
     if not path.exists():
         raise CommonTransmittanceDatasetError(
-            f"Missing model input manifest: {path}. Run tools/build_experimental_input.py first."
+            f"Missing model input manifest: {path}. Run tools/experimental/build_experimental_input.py first."
         )
 
     header_fields: list[str] | None = None

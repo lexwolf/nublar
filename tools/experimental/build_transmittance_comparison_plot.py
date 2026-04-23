@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
 def parse_manifest(path: Path) -> list[ManifestRow]:
     if not path.exists():
         raise TransmittanceComparisonPlotError(
-            f"Missing common-range dataset: {path}. Run tools/build_common_transmittance_dataset.py first."
+            f"Missing common-range dataset: {path}. Run tools/experimental/build_common_transmittance_dataset.py first."
         )
 
     header_fields: list[str] | None = None

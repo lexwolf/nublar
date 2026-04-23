@@ -218,7 +218,7 @@ Possible values:
 
 ### Stage 1
 
-Extend AFM per-island extraction in `tools/afm_lib/features.py`:
+Extend AFM per-island extraction in `tools/experimental/afm_lib/features.py`:
 
 - add the height percentile fields
 - add `volume_equivalent_radius_nm`
@@ -226,7 +226,7 @@ Extend AFM per-island extraction in `tools/afm_lib/features.py`:
 
 ### Stage 2
 
-Update `tools/extract_afm_features.py` outputs:
+Update `tools/experimental/extract_afm_features.py` outputs:
 
 - keep JSON backward-compatible
 - include the new island-level fields
@@ -235,8 +235,8 @@ Update `tools/extract_afm_features.py` outputs:
 
 Update the AFM aggregation tools:
 
-- `tools/build_afm_to_emt_input.py`
-- `tools/build_experimental_input.py`
+- `tools/experimental/build_afm_to_emt_input.py`
+- `tools/experimental/build_experimental_input.py`
 
 to allow choosing the radius proxy used for two-lognormal fitting.
 

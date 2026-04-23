@@ -27,24 +27,24 @@ Run the AFM-derived JSON model -> transmittance -> common dataset -> plot-script
 
 Options:
   --Rave-proxy, --rave-proxy, --radius-proxy NAME
-      Radius proxy passed to tools/build_transmittance_models.py
+      Radius proxy passed to tools/experimental/build_transmittance_models.py
       Default: $RAVE_PROXY
   --effe-proxy NAME
-      Effe proxy passed to tools/build_transmittance_models.py
+      Effe proxy passed to tools/experimental/build_transmittance_models.py
       Default: $EFFE_PROXY
   --thickness-proxy NAME
-      Thickness proxy passed to tools/build_transmittance_models.py
+      Thickness proxy passed to tools/experimental/build_transmittance_models.py
       Default: $THICKNESS_PROXY
   -c, --compile
       Force recompilation of bin/transmittance before execution
   --model-manifest PATH
-      JSON-model sidecar manifest written by tools/build_transmittance_models.py
+      JSON-model sidecar manifest written by tools/experimental/build_transmittance_models.py
       Default: $MODEL_MANIFEST
   --model-json-dir PATH
       Directory for generated solver JSON files
       Default: $MODEL_JSON_DIR
   --common-dataset PATH
-      Common-range manifest written by tools/build_common_transmittance_dataset.py
+      Common-range manifest written by tools/experimental/build_common_transmittance_dataset.py
       Default: $COMMON_DATASET
   --calculated-dir PATH
       Directory for calculated spectra
@@ -177,7 +177,7 @@ if [[ "$EFFECTIVE_MEDIUM_MODEL" != "mmgm" || "$GEOMETRY" != "spheres" ]]; then
 fi
 
 echo "==> Building transmittance JSON models"
-python3 tools/build_transmittance_models.py \
+python3 tools/experimental/build_transmittance_models.py \
   --radius-proxy "$RAVE_PROXY" \
   --effe-proxy "$EFFE_PROXY" \
   --thickness-proxy "$THICKNESS_PROXY" \
@@ -201,7 +201,7 @@ while read -r time_s sample_label model_json experimental_dat calculated_dat res
 done < "$MODEL_MANIFEST"
 
 echo "==> Building common-range transmittance dataset"
-python3 tools/build_common_transmittance_dataset.py \
+python3 tools/experimental/build_common_transmittance_dataset.py \
   --model-manifest "$MODEL_MANIFEST" \
   --effective-medium-model "$EFFECTIVE_MEDIUM_MODEL" \
   --geometry "$GEOMETRY" \
@@ -209,7 +209,7 @@ python3 tools/build_common_transmittance_dataset.py \
   --basename "$(basename "${COMMON_DATASET%.*}")"
 
 echo "==> Building comparison gnuplot script"
-python3 tools/build_transmittance_comparison_plot.py \
+python3 tools/experimental/build_transmittance_comparison_plot.py \
   --common-dataset "$COMMON_DATASET" \
   --gnuplot-out "$PLOT_SCRIPT" \
   --png-out "$PLOT_PNG"

@@ -1,0 +1,402 @@
+```json
+{
+  "schema_version": "0.1",
+  "description": "Bounds and fitting configuration for transmittance-model inverse scans in Nublar.",
+  "placement_recommendation": "data/input/optimal/bounds.json",
+  "global": {
+    "wavelength_min_nm": 300.0,
+    "wavelength_max_nm": 900.0,
+    "objective": {
+      "name": "weighted_curve_plus_derivative",
+      "description": "Weighted sum of squared residuals on transmittance plus first-derivative mismatch on the common wavelength grid.",
+      "residual_metric": "sse",
+      "normalization": "per_point",
+      "interpolation": "linear",
+      "derivative": {
+        "enabled": true,
+        "method": "finite_difference",
+        "weight": 0.2
+      },
+      "curve": {
+        "weight": 1.0
+      },
+      "wavelength_weighting": {
+        "enabled": false,
+        "mode": "uniform"
+      },
+      "smoothing": {
+        "enabled": false,
+        "method": "none",
+        "window_points": 0
+      },
+      "penalties": {
+        "enabled": false,
+        "terms": []
+      }
+    },
+    "reporting": {
+      "save_best_fit_curve": true,
+      "save_residual_curve": true,
+      "save_objective_breakdown": true,
+      "save_good_region_thresholds": [
+        1.01,
+        1.02,
+        1.05
+      ]
+    }
+  },
+  "models": {
+    "mg": {
+      "enabled": true,
+      "family": "effective_medium",
+      "geometry": "default",
+      "native_fit_parameters": {
+        "effe": {
+          "vary": true,
+          "min": 0.001,
+          "max": 0.95,
+          "transform": "none"
+        },
+        "thickness_nm": {
+          "vary": true,
+          "min": 1.0,
+          "max": 100.0,
+          "transform": "log"
+        }
+      },
+      "fixed_parameters": {},
+      "optimizer": {
+        "global_method": "grid",
+        "local_method": "nelder_mead",
+        "grid": {
+          "v1_effe_points": 9,
+          "v1_thickness_points": 9,
+          "effe_points": 120,
+          "thickness_points": 120
+        }
+      },
+      "derived_diagnostics": {
+        "save_parameter_profiles": true,
+        "save_2d_error_map": true
+      }
+    },
+    "bruggeman": {
+      "enabled": true,
+      "family": "effective_medium",
+      "geometry": "default",
+      "native_fit_parameters": {
+        "effe": {
+          "vary": true,
+          "min": 0.001,
+          "max": 0.95,
+          "transform": "none"
+        },
+        "thickness_nm": {
+          "vary": true,
+          "min": 1.0,
+          "max": 100.0,
+          "transform": "log"
+        }
+      },
+      "fixed_parameters": {},
+      "optimizer": {
+        "global_method": "grid",
+        "local_method": "nelder_mead",
+        "grid": {
+          "effe_points": 120,
+          "thickness_points": 120
+        }
+      },
+      "derived_diagnostics": {
+        "save_parameter_profiles": true,
+        "save_2d_error_map": true
+      }
+    },
+    "mmgm_spheres_single": {
+      "enabled": true,
+      "family": "mmgm",
+      "geometry": "spheres",
+      "distribution_model": "single_lognormal",
+      "native_fit_parameters": {
+        "effe": {
+          "vary": true,
+          "min": 0.001,
+          "max": 0.95,
+          "transform": "none"
+        },
+        "thickness_nm": {
+          "vary": true,
+          "min": 1.0,
+          "max": 100.0,
+          "transform": "log"
+        },
+        "rave_nm": {
+          "vary": true,
+          "min": 0.5,
+          "max": 200.0,
+          "transform": "log"
+        },
+        "sig_l": {
+          "vary": true,
+          "min": 0.02,
+          "max": 2.0,
+          "transform": "log"
+        }
+      },
+      "fixed_parameters": {
+        "distribution_type": "lognormal"
+      },
+      "optimizer": {
+        "global_method": "differential_evolution",
+        "local_method": "nelder_mead",
+        "differential_evolution": {
+          "population_size": 24,
+          "mutation_min": 0.5,
+          "mutation_max": 1.0,
+          "recombination": 0.7,
+          "max_generations": 200
+        }
+      },
+      "derived_diagnostics": {
+        "save_distribution_plot": true,
+        "save_distribution_descriptors": [
+          "mean_radius_nm",
+          "mode_radius_nm",
+          "median_radius_nm",
+          "std_radius_nm"
+        ]
+      }
+    },
+    "mmgm_holes_single": {
+      "enabled": true,
+      "family": "mmgm",
+      "geometry": "holes",
+      "distribution_model": "single_lognormal",
+      "native_fit_parameters": {
+        "effe": {
+          "vary": true,
+          "min": 0.001,
+          "max": 0.95,
+          "transform": "none"
+        },
+        "thickness_nm": {
+          "vary": true,
+          "min": 1.0,
+          "max": 100.0,
+          "transform": "log"
+        },
+        "rave_nm": {
+          "vary": true,
+          "min": 0.5,
+          "max": 200.0,
+          "transform": "log"
+        },
+        "sig_l": {
+          "vary": true,
+          "min": 0.02,
+          "max": 2.0,
+          "transform": "log"
+        }
+      },
+      "fixed_parameters": {
+        "distribution_type": "lognormal"
+      },
+      "optimizer": {
+        "global_method": "differential_evolution",
+        "local_method": "nelder_mead",
+        "differential_evolution": {
+          "population_size": 24,
+          "mutation_min": 0.5,
+          "mutation_max": 1.0,
+          "recombination": 0.7,
+          "max_generations": 200
+        }
+      },
+      "derived_diagnostics": {
+        "save_distribution_plot": true,
+        "save_distribution_descriptors": [
+          "mean_radius_nm",
+          "mode_radius_nm",
+          "median_radius_nm",
+          "std_radius_nm"
+        ]
+      }
+    },
+    "mmgm_spheres_double": {
+      "enabled": true,
+      "family": "mmgm",
+      "geometry": "spheres",
+      "distribution_model": "double_lognormal_mixture",
+      "native_fit_parameters": {
+        "effe": {
+          "vary": true,
+          "min": 0.001,
+          "max": 0.95,
+          "transform": "none"
+        },
+        "thickness_nm": {
+          "vary": true,
+          "min": 1.0,
+          "max": 100.0,
+          "transform": "log"
+        },
+        "rave_nm": {
+          "vary": true,
+          "min": 0.5,
+          "max": 200.0,
+          "transform": "log"
+        },
+        "w1": {
+          "vary": true,
+          "min": 0.0,
+          "max": 1.0,
+          "transform": "none",
+          "note": "w2 is derived as 1 - w1"
+        },
+        "mu_l1": {
+          "vary": true,
+          "min": 0.0,
+          "max": 6.5,
+          "transform": "none"
+        },
+        "sig_l1": {
+          "vary": true,
+          "min": 0.02,
+          "max": 2.0,
+          "transform": "log"
+        },
+        "mu_l2": {
+          "vary": true,
+          "min": 0.0,
+          "max": 7.0,
+          "transform": "none"
+        },
+        "sig_l2": {
+          "vary": true,
+          "min": 0.02,
+          "max": 2.0,
+          "transform": "log"
+        }
+      },
+      "derived_parameters": {
+        "w2": "1 - w1"
+      },
+      "fixed_parameters": {},
+      "optimizer": {
+        "global_method": "differential_evolution",
+        "local_method": "nelder_mead",
+        "differential_evolution": {
+          "population_size": 40,
+          "mutation_min": 0.5,
+          "mutation_max": 1.0,
+          "recombination": 0.7,
+          "max_generations": 300
+        }
+      },
+      "derived_diagnostics": {
+        "save_distribution_plot": true,
+        "save_distribution_descriptors": [
+          "component1_mean_radius_nm",
+          "component2_mean_radius_nm",
+          "mixture_mean_radius_nm",
+          "component1_mode_radius_nm",
+          "component2_mode_radius_nm",
+          "mixture_mode_radius_nm",
+          "mixture_std_radius_nm"
+        ],
+        "notes": [
+          "rave_nm is a native MMGM scale parameter and is not identical to the mean radius of the plotted mixture.",
+          "AFM radius proxies should be compared against derived mixture descriptors, not directly against rave_nm."
+        ]
+      }
+    },
+    "mmgm_holes_double": {
+      "enabled": false,
+      "family": "mmgm",
+      "geometry": "holes",
+      "distribution_model": "double_lognormal_mixture",
+      "native_fit_parameters": {
+        "effe": {
+          "vary": true,
+          "min": 0.001,
+          "max": 0.95,
+          "transform": "none"
+        },
+        "thickness_nm": {
+          "vary": true,
+          "min": 1.0,
+          "max": 100.0,
+          "transform": "log"
+        },
+        "rave_nm": {
+          "vary": true,
+          "min": 0.5,
+          "max": 200.0,
+          "transform": "log"
+        },
+        "w1": {
+          "vary": true,
+          "min": 0.0,
+          "max": 1.0,
+          "transform": "none",
+          "note": "w2 is derived as 1 - w1"
+        },
+        "mu_l1": {
+          "vary": true,
+          "min": 0.0,
+          "max": 6.5,
+          "transform": "none"
+        },
+        "sig_l1": {
+          "vary": true,
+          "min": 0.02,
+          "max": 2.0,
+          "transform": "log"
+        },
+        "mu_l2": {
+          "vary": true,
+          "min": 0.0,
+          "max": 7.0,
+          "transform": "none"
+        },
+        "sig_l2": {
+          "vary": true,
+          "min": 0.02,
+          "max": 2.0,
+          "transform": "log"
+        }
+      },
+      "derived_parameters": {
+        "w2": "1 - w1"
+      },
+      "fixed_parameters": {},
+      "optimizer": {
+        "global_method": "differential_evolution",
+        "local_method": "nelder_mead",
+        "differential_evolution": {
+          "population_size": 40,
+          "mutation_min": 0.5,
+          "mutation_max": 1.0,
+          "recombination": 0.7,
+          "max_generations": 300
+        }
+      },
+      "derived_diagnostics": {
+        "save_distribution_plot": true,
+        "save_distribution_descriptors": [
+          "component1_mean_radius_nm",
+          "component2_mean_radius_nm",
+          "mixture_mean_radius_nm",
+          "component1_mode_radius_nm",
+          "component2_mode_radius_nm",
+          "mixture_mode_radius_nm",
+          "mixture_std_radius_nm"
+        ],
+        "notes": [
+          "rave_nm is a native MMGM scale parameter and is not identical to the mean radius of the plotted mixture."
+        ]
+      }
+    }
+  }
+}
+```

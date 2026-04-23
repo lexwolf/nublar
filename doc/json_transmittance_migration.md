@@ -33,14 +33,14 @@ The solver no longer accepts physics override flags such as model, geometry, fil
 Old:
 
 ```bash
-python3 tools/build_experimental_input.py ...
+python3 tools/experimental/build_experimental_input.py ...
 ./bin/transmittance data/input/experimental/model_input.dat ...
 ```
 
 New:
 
 ```bash
-python3 tools/build_transmittance_models.py ...
+python3 tools/experimental/build_transmittance_models.py ...
 ./bin/transmittance data/input/experimental/transmittance_models/20s.json \
   --output data/output/transmittance/silver_nanoisland_20s.dat
 ```

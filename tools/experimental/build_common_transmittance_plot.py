@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         "--model-manifest",
         type=Path,
         default=Path("data/input/experimental/transmittance_models.dat"),
-        help="JSON-model sidecar manifest from tools/build_transmittance_models.py",
+        help="JSON-model sidecar manifest from tools/experimental/build_transmittance_models.py",
     )
     parser.add_argument(
         "--gnuplot-out",
@@ -104,7 +104,7 @@ def parse_model_input(path: Path) -> list[ModelInputRow]:
     if not path.exists():
         raise CommonTransmittancePlotError(
             "Missing experimental model input manifest: "
-            f"{path}. Run `python3 tools/build_experimental_input.py` first."
+            f"{path}. Run `python3 tools/experimental/build_experimental_input.py` first."
         )
 
     header_fields: list[str] | None = None
