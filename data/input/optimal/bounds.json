@@ -1,4 +1,3 @@
-```json
 {
   "schema_version": "0.1",
   "description": "Bounds and fitting configuration for transmittance-model inverse scans in Nublar.",
@@ -8,10 +7,14 @@
     "wavelength_max_nm": 900.0,
     "objective": {
       "name": "weighted_curve_plus_derivative",
-      "description": "Weighted sum of squared residuals on transmittance plus first-derivative mismatch on the common wavelength grid.",
+      "description": "Objective configuration for fitting transmittance spectra. Current v1 MG optimizer uses only transmittance SSE inside fit_window_nm; derivative terms are reserved for later versions.",
       "residual_metric": "sse",
       "normalization": "per_point",
       "interpolation": "linear",
+      "fit_window_nm": {
+        "min": 350.0,
+        "max": 780.0
+      },
       "derivative": {
         "enabled": true,
         "method": "finite_difference",
@@ -69,8 +72,8 @@
         "global_method": "grid",
         "local_method": "nelder_mead",
         "grid": {
-          "v1_effe_points": 9,
-          "v1_thickness_points": 9,
+          "v1_effe_points": 35,
+          "v1_thickness_points": 35,
           "effe_points": 120,
           "thickness_points": 120
         }
@@ -83,7 +86,7 @@
     "bruggeman": {
       "enabled": true,
       "family": "effective_medium",
-      "geometry": "default",
+      "geometry": "symmetric",
       "native_fit_parameters": {
         "effe": {
           "vary": true,
@@ -103,6 +106,8 @@
         "global_method": "grid",
         "local_method": "nelder_mead",
         "grid": {
+          "v1_effe_points": 35,
+          "v1_thickness_points": 35,
           "effe_points": 120,
           "thickness_points": 120
         }
@@ -399,4 +404,3 @@
     }
   }
 }
-```

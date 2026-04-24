@@ -37,6 +37,12 @@ class Spectrum:
 
 
 @dataclass(frozen=True)
+class FitWindow:
+    min_nm: float
+    max_nm: float
+
+
+@dataclass(frozen=True)
 class MgBounds:
     effe_min: float
     effe_max: float
@@ -45,6 +51,7 @@ class MgBounds:
     effe_points: int
     thickness_points: int
     thickness_transform: str
+    fit_window: FitWindow
 
 
 @dataclass(frozen=True)
@@ -69,14 +76,25 @@ def _strip_markdown_fence(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def read_bounds(path: Path) -> MgBounds:
+def read_bounds(path: Path, model_name: str = "mg") -> MgBounds:
     raw = json.loads(_strip_markdown_fence(path.read_text(encoding="utf-8")))
-    mg = raw["models"]["mg"]
-    params = mg["native_fit_parameters"]
-    grid = mg.get("optimizer", {}).get("grid", {})
+    objective = raw["global"]["objective"]
+    fit_window_raw = objective["fit_window_nm"]
+    model = raw["models"][model_name]
+    params = model["native_fit_parameters"]
+    grid = model.get("optimizer", {}).get("grid", {})
 
     effe_points = int(grid.get("v1_effe_points", grid.get("effe_points", 9)))
     thickness_points = int(grid.get("v1_thickness_points", grid.get("thickness_points", 9)))
+    fit_window = FitWindow(
+        min_nm=float(fit_window_raw["min"]),
+        max_nm=float(fit_window_raw["max"]),
+    )
+    if fit_window.min_nm > fit_window.max_nm:
+        raise MgOptimizationError(
+            "Invalid objective fit window: "
+            f"{fit_window.min_nm} > {fit_window.max_nm}"
+        )
 
     return MgBounds(
         effe_min=float(params["effe"]["min"]),
@@ -86,6 +104,7 @@ def read_bounds(path: Path) -> MgBounds:
         effe_points=effe_points,
         thickness_points=thickness_points,
         thickness_transform=str(params["thickness_nm"].get("transform", "none")),
+        fit_window=fit_window,
     )
 
 
@@ -123,12 +142,18 @@ def load_template(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def inject_mg_parameters(
+def inject_effective_medium_parameters(
     template: dict[str, Any],
     spectrum: Spectrum,
+    model_name: str,
+    geometry: str,
     effe: float,
     thickness_nm: float,
 ) -> dict[str, Any]:
+    if model_name not in {"mg", "bruggeman"}:
+        raise MgOptimizationError(f"Unsupported effective-medium model: {model_name}")
+    if geometry not in {"spheres", "holes"}:
+        raise MgOptimizationError(f"Unsupported effective-medium geometry: {geometry}")
     model = json.loads(json.dumps(template))
     grid_min, grid_max, grid_step, _ = spectrum.grid
     model["wavelength_grid_nm"] = {
@@ -142,8 +167,8 @@ def inject_mg_parameters(
             continue
         layer["thickness_nm"] = thickness_nm
         effective_medium = layer["effective_medium"]
-        effective_medium["model"] = "mg"
-        effective_medium["geometry"] = "spheres"
+        effective_medium["model"] = model_name
+        effective_medium["geometry"] = geometry
         effective_medium["filling_fraction"] = effe
         effective_medium.pop("distribution", None)
         return model
@@ -208,12 +233,21 @@ def grids_compatible(
     )
 
 
-def finite_objective_points(experimental: Spectrum, theoretical: Spectrum) -> tuple[int, int]:
+def finite_objective_points(
+    experimental: Spectrum,
+    theoretical: Spectrum,
+    fit_window: FitWindow,
+) -> tuple[int, int]:
     valid_points = 0
     invalid_points = 0
-    for exp_t, model_t in zip(
-        experimental.transmittance, theoretical.transmittance, strict=True
+    for wavelength, exp_t, model_t in zip(
+        experimental.wavelengths_nm,
+        experimental.transmittance,
+        theoretical.transmittance,
+        strict=True,
     ):
+        if wavelength < fit_window.min_nm or wavelength > fit_window.max_nm:
+            continue
         if math.isfinite(exp_t) and math.isfinite(model_t):
             valid_points += 1
         else:
@@ -221,7 +255,11 @@ def finite_objective_points(experimental: Spectrum, theoretical: Spectrum) -> tu
     return valid_points, invalid_points
 
 
-def sse_transmittance(experimental: Spectrum, theoretical: Spectrum) -> tuple[float, int, int]:
+def sse_transmittance(
+    experimental: Spectrum,
+    theoretical: Spectrum,
+    fit_window: FitWindow,
+) -> tuple[float, int, int]:
     if len(experimental.wavelengths_nm) != len(theoretical.wavelengths_nm):
         raise MgOptimizationError(
             "Experimental/model wavelength grids differ in length: "
@@ -245,14 +283,21 @@ def sse_transmittance(experimental: Spectrum, theoretical: Spectrum) -> tuple[fl
             raise MgOptimizationError(
                 f"Experimental/model wavelengths differ: {exp_w} vs {model_w}"
             )
+        if exp_w < fit_window.min_nm or exp_w > fit_window.max_nm:
+            continue
         if not math.isfinite(exp_t) or not math.isfinite(model_t):
             continue
         residual = model_t - exp_t
         sse += residual * residual
         n_points += 1
     if n_points == 0:
-        raise MgOptimizationError("No finite wavelength points available for SSE")
-    valid_points, invalid_points = finite_objective_points(experimental, theoretical)
+        raise MgOptimizationError(
+            "No finite wavelength points available for SSE inside "
+            f"{fit_window.min_nm}-{fit_window.max_nm} nm"
+        )
+    valid_points, invalid_points = finite_objective_points(
+        experimental, theoretical, fit_window
+    )
     return sse, valid_points, invalid_points
 
 
@@ -261,12 +306,17 @@ def evaluate_candidate(
     transmittance_exe: Path,
     template: dict[str, Any],
     experimental: Spectrum,
+    model_name: str,
+    geometry: str,
+    fit_window: FitWindow,
     effe: float,
     thickness_nm: float,
     trial_json_path: Path,
     trial_spectrum_path: Path,
 ) -> MgCandidate:
-    model = inject_mg_parameters(template, experimental, effe, thickness_nm)
+    model = inject_effective_medium_parameters(
+        template, experimental, model_name, geometry, effe, thickness_nm
+    )
     write_trial_json(trial_json_path, model)
     trial_spectrum_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -282,7 +332,9 @@ def evaluate_candidate(
     )
 
     theoretical = read_model_spectrum(trial_spectrum_path)
-    sse, valid_points, invalid_points = sse_transmittance(experimental, theoretical)
+    sse, valid_points, invalid_points = sse_transmittance(
+        experimental, theoretical, fit_window
+    )
     return MgCandidate(
         effe=effe,
         thickness_nm=thickness_nm,
@@ -298,6 +350,8 @@ def optimize_spectrum(
     transmittance_exe: Path,
     template: dict[str, Any],
     bounds: MgBounds,
+    model_name: str,
+    geometry: str,
     experimental: Spectrum,
     tmp_dir: Path,
     final_spectrum_path: Path,
@@ -321,6 +375,9 @@ def optimize_spectrum(
                 transmittance_exe=transmittance_exe,
                 template=template,
                 experimental=experimental,
+                model_name=model_name,
+                geometry=geometry,
+                fit_window=bounds.fit_window,
                 effe=effe,
                 thickness_nm=thickness_nm,
                 trial_json_path=trial_json_path,
