@@ -201,6 +201,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override random seed for stochastic optimizers (MMGM only)",
     )
+    parser.add_argument(
+        "--max-generations",
+        type=int,
+        default=None,
+        help="Override max generations for stochastic optimizers (MMGM only)",
+    )
     return parser.parse_args()
 
 
@@ -1050,6 +1056,8 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
     bounds = read_bounds(args.bounds_json, selection.model)
     if args.seed is not None:
         bounds = replace(bounds, seed=args.seed)
+    if args.max_generations is not None:
+        bounds = replace(bounds, max_generations=args.max_generations)
     spectra_paths = discover_spectra(args.spectra_dir)
     spectra = [read_experimental_spectrum(path) for path in spectra_paths]
     for spectrum in spectra:
