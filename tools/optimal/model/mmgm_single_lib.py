@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
-MODEL_NAME = "mg"
-DISPLAY_NAME = "MG"
+MODEL_NAME = "mmgm_single"
+DISPLAY_NAME = "MMGM single-lognormal"
 SUPPORTED_GEOMETRIES = {"spheres", "holes"}
 
 
-class MgModelError(RuntimeError):
-    """Raised when MG-specific model preparation fails."""
+class MmgmSingleModelError(RuntimeError):
+    """Raised when MMGM single-lognormal model preparation fails."""
 
 
 def validate_geometry(geometry: str) -> None:
     if geometry not in SUPPORTED_GEOMETRIES:
-        raise MgModelError(f"Unsupported MG geometry: {geometry}")
+        raise MmgmSingleModelError(f"Unsupported MMGM single geometry: {geometry}")
 
 
 def configure_effective_medium(
@@ -23,23 +24,30 @@ def configure_effective_medium(
     *,
     geometry: str,
     effe: float,
-    rave_nm: float | None = None,
-    sig_l: float | None = None,
+    rave_nm: float,
+    sig_l: float,
 ) -> None:
     validate_geometry(geometry)
-    effective_medium["model"] = MODEL_NAME
+    effective_medium["model"] = "mmgm"
     effective_medium["geometry"] = geometry
     effective_medium["filling_fraction"] = effe
-    effective_medium.pop("distribution", None)
+    effective_medium["distribution"] = {
+        "type": "lognormal",
+        "rave_nm": rave_nm,
+        "muL": math.log(rave_nm) - 0.5 * sig_l * sig_l,
+        "sigL": sig_l,
+    }
 
 
 def result_parameters(
     effe: float,
     thickness_nm: float,
-    rave_nm: float | None = None,
-    sig_l: float | None = None,
+    rave_nm: float,
+    sig_l: float,
 ) -> dict[str, float]:
     return {
         "effe": effe,
         "thickness_nm": thickness_nm,
+        "rave_nm": rave_nm,
+        "sig_l": sig_l,
     }

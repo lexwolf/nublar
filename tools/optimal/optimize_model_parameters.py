@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,7 @@ THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
-from model import bruggeman_lib, mg_lib  # noqa: E402
+from model import bruggeman_lib, mg_lib, mmgm_single_lib  # noqa: E402
 
 
 class OptimizerError(RuntimeError):
@@ -75,6 +76,16 @@ class ModelBounds:
     thickness_points: int
     thickness_transform: str
     fit_window: FitWindow
+    rave_min_nm: float | None = None
+    rave_max_nm: float | None = None
+    rave_transform: str = "none"
+    sig_l_min: float | None = None
+    sig_l_max: float | None = None
+    sig_l_transform: str = "none"
+    optimizer_method: str = "grid"
+    population_size: int = 16
+    max_generations: int = 40
+    seed: int = 12345
 
 
 @dataclass(frozen=True)
@@ -85,6 +96,8 @@ class Candidate:
     spectrum_path: Path
     objective_points: int
     invalid_points: int
+    rave_nm: float | None = None
+    sig_l: float | None = None
 
 
 @dataclass(frozen=True)
@@ -103,18 +116,24 @@ class ModelLib(Protocol):
         *,
         geometry: str,
         effe: float,
+        rave_nm: float | None = None,
+        sig_l: float | None = None,
     ) -> None: ...
 
     def result_parameters(
         self,
         effe: float,
         thickness_nm: float,
+        rave_nm: float | None = None,
+        sig_l: float | None = None,
     ) -> dict[str, float]: ...
 
 
 MODEL_LIBS: dict[str, ModelLib] = {
     mg_lib.MODEL_NAME: mg_lib,
     bruggeman_lib.MODEL_NAME: bruggeman_lib,
+    "mmgm_spheres_single": mmgm_single_lib,
+    "mmgm_holes_single": mmgm_single_lib,
 }
 
 
@@ -153,6 +172,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run v1 Bruggeman holes grid search",
     )
+    model_group.add_argument(
+        "--mmgm-spheres-single",
+        action="store_true",
+        help="Run v1 MMGM spheres single-lognormal optimization",
+    )
+    model_group.add_argument(
+        "--mmgm-holes-single",
+        action="store_true",
+        help="Run v1 MMGM holes single-lognormal optimization",
+    )
     parser.add_argument("--template-json", type=Path, default=Path("data/input/sample.json"))
     parser.add_argument("--bounds-json", type=Path, default=Path("data/input/optimal/bounds.json"))
     parser.add_argument("--spectra-dir", type=Path, default=Path("data/experimental/final/transmittance"))
@@ -178,17 +207,25 @@ def selected_model(args: argparse.Namespace) -> ModelSelection:
         return ModelSelection(model="bruggeman", geometry="spheres")
     if args.bruggeman_holes:
         return ModelSelection(model="bruggeman", geometry="holes")
+    if args.mmgm_spheres_single:
+        return ModelSelection(model="mmgm_spheres_single", geometry="spheres")
+    if args.mmgm_holes_single:
+        return ModelSelection(model="mmgm_holes_single", geometry="holes")
     raise OptimizerError("No supported model selected")
 
 
-def output_paths(args: argparse.Namespace, selection: ModelSelection) -> OutputPaths:
-    output_dir = args.output_dir / selection.model / selection.geometry
+def output_paths(
+    args: argparse.Namespace,
+    selection: ModelSelection,
+    model: ModelLib,
+) -> OutputPaths:
+    output_dir = args.output_dir / model.MODEL_NAME / selection.geometry
     return OutputPaths(
         output_dir=output_dir,
-        gnuplot_dir=args.gnuplot_dir / selection.model / selection.geometry,
-        image_dir=args.image_dir / selection.model / selection.geometry,
+        gnuplot_dir=args.gnuplot_dir / model.MODEL_NAME / selection.geometry,
+        image_dir=args.image_dir / model.MODEL_NAME / selection.geometry,
         tmp_dir=(
-            args.tmp_dir / selection.model / selection.geometry / "tmp"
+            args.tmp_dir / model.MODEL_NAME / selection.geometry / "tmp"
             if args.tmp_dir
             else output_dir / "tmp"
         ),
@@ -221,6 +258,7 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
     model = raw["models"][model_name]
     params = model["native_fit_parameters"]
     grid = model.get("optimizer", {}).get("grid", {})
+    differential_evolution = model.get("optimizer", {}).get("differential_evolution", {})
 
     effe_points = int(grid.get("v1_effe_points", grid.get("effe_points", 9)))
     thickness_points = int(grid.get("v1_thickness_points", grid.get("thickness_points", 9)))
@@ -234,6 +272,10 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
             f"{fit_window.min_nm} > {fit_window.max_nm}"
         )
 
+    rave = params.get("rave_nm")
+    sig_l = params.get("sig_l")
+    optimizer_method = str(model.get("optimizer", {}).get("global_method", "grid"))
+
     return ModelBounds(
         effe_min=float(params["effe"]["min"]),
         effe_max=float(params["effe"]["max"]),
@@ -243,6 +285,16 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
         thickness_points=thickness_points,
         thickness_transform=str(params["thickness_nm"].get("transform", "none")),
         fit_window=fit_window,
+        rave_min_nm=(float(rave["min"]) if rave else None),
+        rave_max_nm=(float(rave["max"]) if rave else None),
+        rave_transform=(str(rave.get("transform", "none")) if rave else "none"),
+        sig_l_min=(float(sig_l["min"]) if sig_l else None),
+        sig_l_max=(float(sig_l["max"]) if sig_l else None),
+        sig_l_transform=(str(sig_l.get("transform", "none")) if sig_l else "none"),
+        optimizer_method=optimizer_method,
+        population_size=int(differential_evolution.get("v1_population_size", 16)),
+        max_generations=int(differential_evolution.get("v1_max_generations", 40)),
+        seed=int(differential_evolution.get("seed", 12345)),
     )
 
 
@@ -260,6 +312,14 @@ def logspace(minimum: float, maximum: float, count: int) -> list[float]:
         math.exp(value)
         for value in linspace(math.log(minimum), math.log(maximum), count)
     ]
+
+
+def transform_value(minimum: float, maximum: float, transform: str, unit_value: float) -> float:
+    if transform == "log":
+        if minimum <= 0.0 or maximum <= 0.0:
+            raise OptimizerError("Log-spaced bounds must be positive")
+        return math.exp(math.log(minimum) + unit_value * (math.log(maximum) - math.log(minimum)))
+    return minimum + unit_value * (maximum - minimum)
 
 
 def build_grid(bounds: ModelBounds) -> tuple[list[float], list[float]]:
@@ -296,6 +356,8 @@ def prepare_trial_model(
     geometry: str,
     effe: float,
     thickness_nm: float,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
 ) -> dict[str, Any]:
     model = json.loads(json.dumps(template))
     grid_min, grid_max, grid_step, _ = spectrum.grid
@@ -309,11 +371,20 @@ def prepare_trial_model(
         if layer.get("kind") != "effective_medium":
             continue
         layer["thickness_nm"] = thickness_nm
-        model_lib.configure_effective_medium(
-            layer["effective_medium"],
-            geometry=geometry,
-            effe=effe,
-        )
+        if rave_nm is None or sig_l is None:
+            model_lib.configure_effective_medium(
+                layer["effective_medium"],
+                geometry=geometry,
+                effe=effe,
+            )
+        else:
+            model_lib.configure_effective_medium(
+                layer["effective_medium"],
+                geometry=geometry,
+                effe=effe,
+                rave_nm=rave_nm,
+                sig_l=sig_l,
+            )
         return model
 
     raise OptimizerError("Template JSON has no effective_medium layer")
@@ -550,6 +621,8 @@ def evaluate_candidate(
     trial_json_path: Path,
     trial_spectrum_path: Path,
     check_geometry_invariance: bool,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
 ) -> Candidate:
     prepared_model = prepare_trial_model(
         template=template,
@@ -558,6 +631,8 @@ def evaluate_candidate(
         geometry=geometry,
         effe=effe,
         thickness_nm=thickness_nm,
+        rave_nm=rave_nm,
+        sig_l=sig_l,
     )
     write_trial_json(trial_json_path, prepared_model)
     trial_spectrum_path.parent.mkdir(parents=True, exist_ok=True)
@@ -583,6 +658,8 @@ def evaluate_candidate(
         spectrum_path=trial_spectrum_path,
         objective_points=valid_points,
         invalid_points=invalid_points,
+        rave_nm=rave_nm,
+        sig_l=sig_l,
     )
 
 
@@ -650,6 +727,154 @@ def optimize_spectrum(
     return best
 
 
+def require_mmgm_single_bounds(bounds: ModelBounds) -> None:
+    missing = []
+    if bounds.rave_min_nm is None or bounds.rave_max_nm is None:
+        missing.append("rave_nm")
+    if bounds.sig_l_min is None or bounds.sig_l_max is None:
+        missing.append("sig_l")
+    if missing:
+        raise OptimizerError(
+            "MMGM single-lognormal bounds are missing parameter(s): "
+            + ", ".join(missing)
+        )
+
+
+def mmgm_single_parameters_from_unit_vector(
+    unit_values: list[float] | tuple[float, float, float, float],
+    bounds: ModelBounds,
+) -> tuple[float, float, float, float]:
+    require_mmgm_single_bounds(bounds)
+    assert bounds.rave_min_nm is not None
+    assert bounds.rave_max_nm is not None
+    assert bounds.sig_l_min is not None
+    assert bounds.sig_l_max is not None
+    effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[0])
+    thickness_nm = transform_value(
+        bounds.thickness_min_nm,
+        bounds.thickness_max_nm,
+        bounds.thickness_transform,
+        unit_values[1],
+    )
+    rave_nm = transform_value(
+        bounds.rave_min_nm,
+        bounds.rave_max_nm,
+        bounds.rave_transform,
+        unit_values[2],
+    )
+    sig_l = transform_value(
+        bounds.sig_l_min,
+        bounds.sig_l_max,
+        bounds.sig_l_transform,
+        unit_values[3],
+    )
+    return effe, thickness_nm, rave_nm, sig_l
+
+
+def optimize_mmgm_single_spectrum(
+    *,
+    transmittance_exe: Path,
+    template: dict[str, Any],
+    bounds: ModelBounds,
+    model: ModelLib,
+    geometry: str,
+    experimental: Spectrum,
+    tmp_dir: Path,
+    final_spectrum_path: Path,
+) -> Candidate:
+    require_mmgm_single_bounds(bounds)
+    best: Candidate | None = None
+    trial_name = trial_stem(experimental.basename)
+    trial_json_path = tmp_dir / f"{trial_name}.json"
+    trial_spectrum_path = tmp_dir / f"{trial_name}.dat"
+
+    def evaluate_unit_vector(unit_values: list[float] | tuple[float, float, float, float]) -> float:
+        nonlocal best
+        effe, thickness_nm, rave_nm, sig_l = mmgm_single_parameters_from_unit_vector(
+            unit_values, bounds
+        )
+        candidate = evaluate_candidate(
+            transmittance_exe=transmittance_exe,
+            template=template,
+            model=model,
+            experimental=experimental,
+            geometry=geometry,
+            fit_window=bounds.fit_window,
+            effe=effe,
+            thickness_nm=thickness_nm,
+            trial_json_path=trial_json_path,
+            trial_spectrum_path=trial_spectrum_path,
+            check_geometry_invariance=False,
+            rave_nm=rave_nm,
+            sig_l=sig_l,
+        )
+        if best is None or candidate.sse < best.sse:
+            best = Candidate(
+                effe=candidate.effe,
+                thickness_nm=candidate.thickness_nm,
+                sse=candidate.sse,
+                spectrum_path=final_spectrum_path,
+                objective_points=candidate.objective_points,
+                invalid_points=candidate.invalid_points,
+                rave_nm=candidate.rave_nm,
+                sig_l=candidate.sig_l,
+            )
+            final_spectrum_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(candidate.spectrum_path, final_spectrum_path)
+            print(
+                "      new best: "
+                f"effe={best.effe:.6g}, thickness_nm={best.thickness_nm:.6g}, "
+                f"rave_nm={best.rave_nm:.6g}, sig_l={best.sig_l:.6g}, "
+                f"SSE={best.sse:.8g}",
+                flush=True,
+            )
+        return candidate.sse
+
+    try:
+        from scipy.optimize import differential_evolution
+    except ImportError:
+        total = bounds.population_size * (bounds.max_generations + 1)
+        print(
+            "    SciPy not found; using deterministic fallback sampling "
+            f"with {total} evaluations",
+            flush=True,
+        )
+        rng = random.Random(bounds.seed)
+        strata_by_dimension = []
+        for _ in range(4):
+            strata = list(range(total))
+            rng.shuffle(strata)
+            strata_by_dimension.append(strata)
+        for evaluation in range(total):
+            unit_values = [
+                (strata_by_dimension[dimension][evaluation] + rng.random()) / total
+                for dimension in range(4)
+            ]
+            evaluate_unit_vector(unit_values)
+    else:
+        print(
+            "    SciPy differential_evolution: "
+            f"population_size={bounds.population_size}, "
+            f"max_generations={bounds.max_generations}, seed={bounds.seed}",
+            flush=True,
+        )
+        scipy_popsize = max(1, math.ceil(bounds.population_size / 4.0))
+        differential_evolution(
+            lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
+            bounds=[(0.0, 1.0)] * 4,
+            maxiter=bounds.max_generations,
+            popsize=scipy_popsize,
+            seed=bounds.seed,
+            polish=False,
+            updating="immediate",
+            workers=1,
+        )
+
+    if best is None:
+        raise OptimizerError(f"No candidates evaluated for {experimental.path}")
+    return best
+
+
 def write_gnuplot_script(
     *,
     path: Path,
@@ -664,9 +889,12 @@ def write_gnuplot_script(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image_path.parent.mkdir(parents=True, exist_ok=True)
+    parameter_summary = f"effe={best.effe:.5g}, d={best.thickness_nm:.5g} nm"
+    if best.rave_nm is not None and best.sig_l is not None:
+        parameter_summary += f", rave={best.rave_nm:.5g} nm, sigL={best.sig_l:.5g}"
     title = (
         f"{model.DISPLAY_NAME} {geometry} fit {experimental.basename}: "
-        f"effe={best.effe:.5g}, d={best.thickness_nm:.5g} nm, SSE={best.sse:.5g}"
+        f"{parameter_summary}, SSE={best.sse:.5g}"
     )
     path.write_text(
         "\n".join(
@@ -705,6 +933,28 @@ def write_gnuplot_script(
     )
 
 
+def optimizer_summary(bounds: ModelBounds, n_parameters: int) -> dict[str, Any]:
+    if n_parameters == 4:
+        scipy_popsize = max(1, math.ceil(bounds.population_size / 4.0))
+        return {
+            "method": "differential_evolution_or_fallback_sampling",
+            "population_size": bounds.population_size,
+            "max_generations": bounds.max_generations,
+            "seed": bounds.seed,
+            "estimated_total_evaluations": scipy_popsize
+            * n_parameters
+            * (bounds.max_generations + 1),
+            "bounds": asdict(bounds),
+        }
+    return {
+        "method": "grid",
+        "effe_points": bounds.effe_points,
+        "thickness_points": bounds.thickness_points,
+        "total_evaluations": bounds.effe_points * bounds.thickness_points,
+        "bounds": asdict(bounds),
+    }
+
+
 def write_result_json(
     *,
     path: Path,
@@ -721,6 +971,7 @@ def write_result_json(
     grid_min, grid_max, grid_step, full_spectrum_points = experimental.grid
     mse = best.sse / best.objective_points
     rmse = math.sqrt(mse)
+    n_parameters = 4 if best.rave_nm is not None and best.sig_l is not None else 2
     result = {
         "model": model.MODEL_NAME,
         "geometry": geometry,
@@ -728,7 +979,12 @@ def write_result_json(
         "theoretical_file": project_relative(theoretical_path),
         "gnuplot_script": project_relative(gnuplot_path),
         "image_file": project_relative(image_path),
-        "best_parameters": model.result_parameters(best.effe, best.thickness_nm),
+        "best_parameters": model.result_parameters(
+            best.effe,
+            best.thickness_nm,
+            best.rave_nm,
+            best.sig_l,
+        ),
         "objective_window_nm": {
             "min": bounds.fit_window.min_nm,
             "max": bounds.fit_window.max_nm,
@@ -744,13 +1000,7 @@ def write_result_json(
             "rmse": rmse,
             "finite_points": best.objective_points,
             "invalid_points": best.invalid_points,
-            "n_parameters": 2,
-        },
-        "grid_search": {
-            "effe_points": bounds.effe_points,
-            "thickness_points": bounds.thickness_points,
-            "total_evaluations": bounds.effe_points * bounds.thickness_points,
-            "bounds": asdict(bounds),
+            "n_parameters": n_parameters,
         },
         "wavelength_grid_nm": {
             "min": grid_min,
@@ -759,6 +1009,10 @@ def write_result_json(
         },
         "full_spectrum_points": full_spectrum_points,
     }
+    if n_parameters == 2:
+        result["grid_search"] = optimizer_summary(bounds, n_parameters)
+    else:
+        result["optimizer"] = optimizer_summary(bounds, n_parameters)
     if best.invalid_points > 0:
         result["warnings"] = ["non_finite_points_present"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -787,19 +1041,26 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
 
     selected_lib = model_lib(selection)
     template = load_template(args.template_json)
-    bounds = read_bounds(args.bounds_json, selected_lib.MODEL_NAME)
+    bounds = read_bounds(args.bounds_json, selection.model)
     spectra_paths = discover_spectra(args.spectra_dir)
     spectra = [read_experimental_spectrum(path) for path in spectra_paths]
     for spectrum in spectra:
         validate_uniform_grid(spectrum)
     plot_window = common_plot_window(spectra)
-    paths = output_paths(args, selection)
+    paths = output_paths(args, selection, selected_lib)
 
-    print(
-        f"{selected_lib.DISPLAY_NAME} {selection.geometry} grid: "
-        f"{bounds.effe_points} x {bounds.thickness_points} = "
-        f"{bounds.effe_points * bounds.thickness_points} evaluations per spectrum"
-    )
+    if selection.model in {"mmgm_spheres_single", "mmgm_holes_single"}:
+        print(
+            f"{selected_lib.DISPLAY_NAME} {selection.geometry} optimizer: "
+            f"population_size={bounds.population_size}, "
+            f"max_generations={bounds.max_generations}, seed={bounds.seed}"
+        )
+    else:
+        print(
+            f"{selected_lib.DISPLAY_NAME} {selection.geometry} grid: "
+            f"{bounds.effe_points} x {bounds.thickness_points} = "
+            f"{bounds.effe_points * bounds.thickness_points} evaluations per spectrum"
+        )
     print(
         f"{selected_lib.DISPLAY_NAME} {selection.geometry} objective fit window: "
         f"{bounds.fit_window.min_nm:g}-{bounds.fit_window.max_nm:g} nm"
@@ -834,17 +1095,29 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
         gnuplot_path = paths.gnuplot_dir / f"{stem}.gp"
         image_path = paths.image_dir / f"{stem}.png"
 
-        best = optimize_spectrum(
-            transmittance_exe=args.transmittance_exe,
-            template=template,
-            bounds=bounds,
-            model=selected_lib,
-            geometry=selection.geometry,
-            experimental=spectrum,
-            tmp_dir=paths.tmp_dir,
-            final_spectrum_path=theoretical_path,
-            check_geometry_invariance=args.check_geometry_invariance,
-        )
+        if selection.model in {"mmgm_spheres_single", "mmgm_holes_single"}:
+            best = optimize_mmgm_single_spectrum(
+                transmittance_exe=args.transmittance_exe,
+                template=template,
+                bounds=bounds,
+                model=selected_lib,
+                geometry=selection.geometry,
+                experimental=spectrum,
+                tmp_dir=paths.tmp_dir,
+                final_spectrum_path=theoretical_path,
+            )
+        else:
+            best = optimize_spectrum(
+                transmittance_exe=args.transmittance_exe,
+                template=template,
+                bounds=bounds,
+                model=selected_lib,
+                geometry=selection.geometry,
+                experimental=spectrum,
+                tmp_dir=paths.tmp_dir,
+                final_spectrum_path=theoretical_path,
+                check_geometry_invariance=args.check_geometry_invariance,
+            )
         write_result_json(
             path=result_path,
             experimental=spectrum,
@@ -892,6 +1165,7 @@ if __name__ == "__main__":
         OptimizerError,
         mg_lib.MgModelError,
         bruggeman_lib.BruggemanModelError,
+        mmgm_single_lib.MmgmSingleModelError,
         subprocess.CalledProcessError,
     ) as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -23,6 +23,8 @@ def configure_effective_medium(
     *,
     geometry: str,
     effe: float,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
 ) -> None:
     validate_geometry(geometry)
     effective_medium["model"] = MODEL_NAME
@@ -31,7 +33,12 @@ def configure_effective_medium(
     effective_medium.pop("distribution", None)
 
 
-def result_parameters(effe: float, thickness_nm: float) -> dict[str, float]:
+def result_parameters(
+    effe: float,
+    thickness_nm: float,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
+) -> dict[str, float]:
     return {
         "effe": effe,
         "thickness_nm": thickness_nm,
