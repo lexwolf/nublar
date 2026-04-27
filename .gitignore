@@ -34,11 +34,11 @@ data/input/experimental/model_input.csv
 data/input/experimental/model_input.dat
 
 # Generated plots / images
-img/output/
-img/comparisons/transmittance/
+img/
 
 # Generated gnuplot scripts
 scripts/gnuplot/output/
+scripts/gnuplot/optimal/
 
 # Editor / OS noise
 *~
