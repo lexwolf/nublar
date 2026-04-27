@@ -9,7 +9,7 @@ import random
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -194,6 +194,12 @@ def parse_args() -> argparse.Namespace:
         "--check-geometry-invariance",
         action="store_true",
         help="Run the Bruggeman spheres/holes geometry invariance diagnostic",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override random seed for stochastic optimizers (MMGM only)",
     )
     return parser.parse_args()
 
@@ -1042,6 +1048,8 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
     selected_lib = model_lib(selection)
     template = load_template(args.template_json)
     bounds = read_bounds(args.bounds_json, selection.model)
+    if args.seed is not None:
+        bounds = replace(bounds, seed=args.seed)
     spectra_paths = discover_spectra(args.spectra_dir)
     spectra = [read_experimental_spectrum(path) for path in spectra_paths]
     for spectrum in spectra:

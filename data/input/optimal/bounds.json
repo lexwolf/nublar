@@ -159,7 +159,8 @@
           "mutation_min": 0.5,
           "mutation_max": 1.0,
           "recombination": 0.7,
-          "max_generations": 200
+          "max_generations": 200,
+          "seed": 12345
         }
       },
       "derived_diagnostics": {
@@ -214,7 +215,8 @@
           "mutation_min": 0.5,
           "mutation_max": 1.0,
           "recombination": 0.7,
-          "max_generations": 200
+          "max_generations": 200,
+          "seed": 12345
         }
       },
       "derived_diagnostics": {
