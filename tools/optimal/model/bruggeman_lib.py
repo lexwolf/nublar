@@ -4,18 +4,18 @@ from __future__ import annotations
 from typing import Any
 
 
-MODEL_NAME = "mg"
-DISPLAY_NAME = "MG"
+MODEL_NAME = "bruggeman"
+DISPLAY_NAME = "Bruggeman"
 SUPPORTED_GEOMETRIES = {"spheres", "holes"}
 
 
-class MgModelError(RuntimeError):
-    """Raised when MG-specific model preparation fails."""
+class BruggemanModelError(RuntimeError):
+    """Raised when Bruggeman-specific model preparation fails."""
 
 
 def validate_geometry(geometry: str) -> None:
     if geometry not in SUPPORTED_GEOMETRIES:
-        raise MgModelError(f"Unsupported MG geometry: {geometry}")
+        raise BruggemanModelError(f"Unsupported Bruggeman geometry: {geometry}")
 
 
 def configure_effective_medium(

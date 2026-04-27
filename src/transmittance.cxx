@@ -498,7 +498,8 @@ std::complex<double> evaluate_effective_permittivity(
     EffectiveMediumState& state,
     std::complex<double> eps_metal,
     std::complex<double> eps_air,
-    double wavelength_nm)
+    double wavelength_nm,
+    bool check_geometry_invariance)
 {
     const EffectiveMediumModel model = to_effective_medium_model(config.model);
     const EffectiveMediumGeometry geometry = to_effective_medium_geometry(config.geometry);
@@ -538,44 +539,46 @@ std::complex<double> evaluate_effective_permittivity(
                           << std::endl;
             }
 
-            const EffectiveMediumMorphology spheres_morphology = effective_medium_morphology(
-                EffectiveMediumGeometry::Spheres, eps_metal, eps_air, config.filling_fraction);
-            const EffectiveMediumMorphology holes_morphology = effective_medium_morphology(
-                EffectiveMediumGeometry::Holes, eps_metal, eps_air, config.filling_fraction);
+            if (check_geometry_invariance) {
+                const EffectiveMediumMorphology spheres_morphology = effective_medium_morphology(
+                    EffectiveMediumGeometry::Spheres, eps_metal, eps_air, config.filling_fraction);
+                const EffectiveMediumMorphology holes_morphology = effective_medium_morphology(
+                    EffectiveMediumGeometry::Holes, eps_metal, eps_air, config.filling_fraction);
 
-            const auto spheres_roots = nublar::BruggemanRoots(
-                spheres_morphology.inclusion_fraction,
-                spheres_morphology.inclusion_eps,
-                spheres_morphology.host_eps);
-            const auto holes_roots = nublar::BruggemanRoots(
-                holes_morphology.inclusion_fraction,
-                holes_morphology.inclusion_eps,
-                holes_morphology.host_eps);
-
-            const std::complex<double> spheres_eps_eff =
-                state.validation_previous_bruggeman_spheres_eps_eff.has_value()
-                ? nublar::BruggemanSelectContinuationRoot(
-                    spheres_roots, *state.validation_previous_bruggeman_spheres_eps_eff)
-                : nublar::BruggemanSelectInitialRoot(
+                const auto spheres_roots = nublar::BruggemanRoots(
                     spheres_morphology.inclusion_fraction,
-                    spheres_roots,
                     spheres_morphology.inclusion_eps,
                     spheres_morphology.host_eps);
-            const std::complex<double> holes_eps_eff =
-                state.validation_previous_bruggeman_holes_eps_eff.has_value()
-                ? nublar::BruggemanSelectContinuationRoot(
-                    holes_roots, *state.validation_previous_bruggeman_holes_eps_eff)
-                : nublar::BruggemanSelectInitialRoot(
+                const auto holes_roots = nublar::BruggemanRoots(
                     holes_morphology.inclusion_fraction,
-                    holes_roots,
                     holes_morphology.inclusion_eps,
                     holes_morphology.host_eps);
 
-            state.validation_previous_bruggeman_spheres_eps_eff = spheres_eps_eff;
-            state.validation_previous_bruggeman_holes_eps_eff = holes_eps_eff;
-            state.max_bruggeman_geometry_difference = std::max(
-                state.max_bruggeman_geometry_difference,
-                std::abs(spheres_eps_eff - holes_eps_eff));
+                const std::complex<double> spheres_eps_eff =
+                    state.validation_previous_bruggeman_spheres_eps_eff.has_value()
+                    ? nublar::BruggemanSelectContinuationRoot(
+                        spheres_roots, *state.validation_previous_bruggeman_spheres_eps_eff)
+                    : nublar::BruggemanSelectInitialRoot(
+                        spheres_morphology.inclusion_fraction,
+                        spheres_roots,
+                        spheres_morphology.inclusion_eps,
+                        spheres_morphology.host_eps);
+                const std::complex<double> holes_eps_eff =
+                    state.validation_previous_bruggeman_holes_eps_eff.has_value()
+                    ? nublar::BruggemanSelectContinuationRoot(
+                        holes_roots, *state.validation_previous_bruggeman_holes_eps_eff)
+                    : nublar::BruggemanSelectInitialRoot(
+                        holes_morphology.inclusion_fraction,
+                        holes_roots,
+                        holes_morphology.inclusion_eps,
+                        holes_morphology.host_eps);
+
+                state.validation_previous_bruggeman_spheres_eps_eff = spheres_eps_eff;
+                state.validation_previous_bruggeman_holes_eps_eff = holes_eps_eff;
+                state.max_bruggeman_geometry_difference = std::max(
+                    state.max_bruggeman_geometry_difference,
+                    std::abs(spheres_eps_eff - holes_eps_eff));
+            }
 
             return eps_eff;
         }
@@ -701,7 +704,8 @@ void validate_stack_contract(const nublar::TransmittanceModelJson& model)
 
 void write_spectrum(const std::string& project_root,
                     const nublar::TransmittanceModelJson& model,
-                    const std::optional<std::filesystem::path>& cli_output_path)
+                    const std::optional<std::filesystem::path>& cli_output_path,
+                    bool check_geometry_invariance)
 {
     validate_stack_contract(model);
 
@@ -798,7 +802,8 @@ void write_spectrum(const std::string& project_root,
             effective_medium_state,
             eps_metal,
             eps_air,
-            wavelength_nm);
+            wavelength_nm,
+            check_geometry_invariance);
 
         std::vector<Layer> front_layers;
         std::complex<double> eps_ito = {
@@ -866,7 +871,7 @@ void write_spectrum(const std::string& project_root,
             << A_front << "\n";
     }
 
-    if (effective_medium_model == EffectiveMediumModel::Bruggeman) {
+    if (check_geometry_invariance && effective_medium_model == EffectiveMediumModel::Bruggeman) {
         constexpr double kBruggemanGeometryTolerance = 1e-9;
         const char* level = (effective_medium_state.max_bruggeman_geometry_difference
                              <= kBruggemanGeometryTolerance)
@@ -882,6 +887,18 @@ void write_spectrum(const std::string& project_root,
     std::cout << output_path << "\n";
 }
 
+bool model_uses_bruggeman(const nublar::TransmittanceModelJson& model)
+{
+    for (const nublar::JsonLayer& layer : model.stack.layers) {
+        if (layer.kind != "effective_medium") {
+            continue;
+        }
+        return to_effective_medium_model(layer.effective_medium.model)
+               == EffectiveMediumModel::Bruggeman;
+    }
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -889,6 +906,7 @@ int main(int argc, char* argv[])
     try {
         const std::string project_root = nublar::resolve_project_root(argv[0]);
         bool toy_mode = false;
+        bool check_geometry_invariance = false;
         std::optional<std::filesystem::path> output_path;
         std::vector<std::string> positional_args;
 
@@ -896,6 +914,10 @@ int main(int argc, char* argv[])
             const std::string arg = argv[i];
             if (arg == "--toy") {
                 toy_mode = true;
+                continue;
+            }
+            if (arg == "--check-geometry-invariance") {
+                check_geometry_invariance = true;
                 continue;
             }
             if (arg == "--output") {
@@ -917,7 +939,8 @@ int main(int argc, char* argv[])
 
         if (positional_args.size() > 1) {
             throw std::runtime_error(
-                "Usage: transmittance [--output PATH] [--toy] [model.json]");
+                "Usage: transmittance [--output PATH] [--toy] "
+                "[--check-geometry-invariance] [model.json]");
         }
 
         const std::filesystem::path model_json_path = (!positional_args.empty())
@@ -926,7 +949,14 @@ int main(int argc, char* argv[])
 
         const nublar::TransmittanceModelJson model =
             nublar::read_transmittance_model_json(model_json_path);
-        write_spectrum(project_root, model, output_path);
+        if (check_geometry_invariance && !model_uses_bruggeman(model)) {
+            std::cerr
+                << "WARNING: --check-geometry-invariance is only supported for "
+                << "the bruggeman model"
+                << std::endl;
+            return 1;
+        }
+        write_spectrum(project_root, model, output_path, check_geometry_invariance);
 
         return 0;
     } catch (const std::exception& exc) {
