@@ -19,6 +19,10 @@ if str(THIS_DIR) not in sys.path:
 
 from model import bruggeman_lib, mg_lib, mmgm_single_lib  # noqa: E402
 
+VERY_LARGE_SSE = 1.0e99
+LOGNORMAL_P95_Z = 1.6448536269514722
+LOGNORMAL_P99_Z = 2.3263478740408408
+
 
 class OptimizerError(RuntimeError):
     """Raised when the optimizer orchestration fails."""
@@ -67,6 +71,14 @@ class FitWindow:
 
 
 @dataclass(frozen=True)
+class ThicknessTailConstraint:
+    enabled: bool = False
+    percentile: float = 0.95
+    factor: float = 2.0
+    mode: str = "reject"
+
+
+@dataclass(frozen=True)
 class ModelBounds:
     effe_min: float
     effe_max: float
@@ -86,6 +98,7 @@ class ModelBounds:
     population_size: int = 16
     max_generations: int = 40
     seed: int = 12345
+    thickness_tail_constraint: ThicknessTailConstraint = ThicknessTailConstraint()
 
 
 @dataclass(frozen=True)
@@ -263,6 +276,33 @@ def _strip_markdown_fence(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def read_thickness_tail_constraint(model: dict[str, Any]) -> ThicknessTailConstraint:
+    raw = model.get("constraints", {}).get("thickness_tail", {})
+    if not raw:
+        return ThicknessTailConstraint()
+
+    constraint = ThicknessTailConstraint(
+        enabled=bool(raw.get("enabled", False)),
+        percentile=float(raw.get("percentile", 0.95)),
+        factor=float(raw.get("factor", 2.0)),
+        mode=str(raw.get("mode", "reject")),
+    )
+    if constraint.percentile not in {0.95, 0.99}:
+        raise OptimizerError(
+            "Invalid thickness_tail percentile: "
+            f"{constraint.percentile}. Supported values are 0.95 and 0.99."
+        )
+    if constraint.factor <= 0.0:
+        raise OptimizerError(
+            f"Invalid thickness_tail factor: {constraint.factor}. Must be positive."
+        )
+    if constraint.mode != "reject":
+        raise OptimizerError(
+            f"Invalid thickness_tail mode: {constraint.mode}. Only 'reject' is supported."
+        )
+    return constraint
+
+
 def read_bounds(path: Path, model_name: str) -> ModelBounds:
     raw = json.loads(_strip_markdown_fence(path.read_text(encoding="utf-8")))
     objective = raw["global"]["objective"]
@@ -287,6 +327,7 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
     rave = params.get("rave_nm")
     sig_l = params.get("sig_l")
     optimizer_method = str(model.get("optimizer", {}).get("global_method", "grid"))
+    thickness_tail_constraint = read_thickness_tail_constraint(model)
 
     return ModelBounds(
         effe_min=float(params["effe"]["min"]),
@@ -304,9 +345,20 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
         sig_l_max=(float(sig_l["max"]) if sig_l else None),
         sig_l_transform=(str(sig_l.get("transform", "none")) if sig_l else "none"),
         optimizer_method=optimizer_method,
-        population_size=int(differential_evolution.get("v1_population_size", 16)),
-        max_generations=int(differential_evolution.get("v1_max_generations", 40)),
+        population_size=int(
+            differential_evolution.get(
+                "v1_population_size",
+                differential_evolution.get("population_size", 16),
+            )
+        ),
+        max_generations=int(
+            differential_evolution.get(
+                "v1_max_generations",
+                differential_evolution.get("max_generations", 40),
+            )
+        ),
         seed=int(differential_evolution.get("seed", 12345)),
+        thickness_tail_constraint=thickness_tail_constraint,
     )
 
 
@@ -752,6 +804,45 @@ def require_mmgm_single_bounds(bounds: ModelBounds) -> None:
         )
 
 
+def lognormal_radius_descriptors(
+    *, rave_nm: float, sig_l: float, thickness_nm: float
+) -> dict[str, float]:
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
+    r_p95 = math.exp(mu_l + LOGNORMAL_P95_Z * sig_l)
+    r_p99 = math.exp(mu_l + LOGNORMAL_P99_Z * sig_l)
+    return {
+        "mean_radius_nm": rave_nm,
+        "median_radius_nm": math.exp(mu_l),
+        "mode_radius_nm": math.exp(mu_l - sig_l * sig_l),
+        "r_p95_nm": r_p95,
+        "r_p99_nm": r_p99,
+        "thickness_over_2rp95": thickness_nm / (2.0 * r_p95),
+        "thickness_over_2rp99": thickness_nm / (2.0 * r_p99),
+    }
+
+
+def lognormal_radius_percentile(rave_nm: float, sig_l: float, percentile: float) -> float:
+    z_value = {
+        0.95: LOGNORMAL_P95_Z,
+        0.99: LOGNORMAL_P99_Z,
+    }[percentile]
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
+    return math.exp(mu_l + z_value * sig_l)
+
+
+def violates_thickness_tail_constraint(
+    thickness_nm: float,
+    rave_nm: float,
+    sig_l: float,
+    bounds: ModelBounds,
+) -> bool:
+    constraint = bounds.thickness_tail_constraint
+    if not constraint.enabled:
+        return False
+    radius_nm = lognormal_radius_percentile(rave_nm, sig_l, constraint.percentile)
+    return thickness_nm > constraint.factor * radius_nm
+
+
 def mmgm_single_parameters_from_unit_vector(
     unit_values: list[float] | tuple[float, float, float, float],
     bounds: ModelBounds,
@@ -805,6 +896,8 @@ def optimize_mmgm_single_spectrum(
         effe, thickness_nm, rave_nm, sig_l = mmgm_single_parameters_from_unit_vector(
             unit_values, bounds
         )
+        if violates_thickness_tail_constraint(thickness_nm, rave_nm, sig_l, bounds):
+            return VERY_LARGE_SSE
         candidate = evaluate_candidate(
             transmittance_exe=transmittance_exe,
             template=template,
@@ -1025,6 +1118,16 @@ def write_result_json(
         result["grid_search"] = optimizer_summary(bounds, n_parameters)
     else:
         result["optimizer"] = optimizer_summary(bounds, n_parameters)
+        assert best.rave_nm is not None
+        assert best.sig_l is not None
+        result["constraints"] = {
+            "thickness_tail": asdict(bounds.thickness_tail_constraint),
+        }
+        result["distribution_descriptors"] = lognormal_radius_descriptors(
+            rave_nm=best.rave_nm,
+            sig_l=best.sig_l,
+            thickness_nm=best.thickness_nm,
+        )
     if best.invalid_points > 0:
         result["warnings"] = ["non_finite_points_present"]
     path.parent.mkdir(parents=True, exist_ok=True)

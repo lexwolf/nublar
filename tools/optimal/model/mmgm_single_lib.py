@@ -27,14 +27,22 @@ def configure_effective_medium(
     rave_nm: float,
     sig_l: float,
 ) -> None:
+    """Configure single-lognormal MMGM.
+
+    For single-lognormal MMGM, rave_nm is interpreted as the arithmetic mean
+    radius of the lognormal distribution.
+    """
     validate_geometry(geometry)
+    # For single-lognormal MMGM, rave_nm is interpreted as the arithmetic mean
+    # radius, so muL is shifted by -0.5 * sigL^2.
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
     effective_medium["model"] = "mmgm"
     effective_medium["geometry"] = geometry
     effective_medium["filling_fraction"] = effe
     effective_medium["distribution"] = {
         "type": "lognormal",
         "rave_nm": rave_nm,
-        "muL": math.log(rave_nm) - 0.5 * sig_l * sig_l,
+        "muL": mu_l,
         "sigL": sig_l,
     }
 

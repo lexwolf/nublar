@@ -132,20 +132,29 @@
         "thickness_nm": {
           "vary": true,
           "min": 1.0,
-          "max": 100.0,
+          "max": 60.0,
           "transform": "log"
         },
         "rave_nm": {
           "vary": true,
-          "min": 0.5,
-          "max": 200.0,
-          "transform": "log"
+          "min": 5.0,
+          "max": 120.0,
+          "transform": "log",
+          "meaning": "arithmetic mean radius of the single-lognormal distribution"
         },
         "sig_l": {
           "vary": true,
-          "min": 0.02,
-          "max": 2.0,
+          "min": 0.08,
+          "max": 1.0,
           "transform": "log"
+        }
+      },
+      "constraints": {
+        "thickness_tail": {
+          "enabled": true,
+          "percentile": 0.95,
+          "factor": 2.0,
+          "mode": "reject"
         }
       },
       "fixed_parameters": {
@@ -188,20 +197,29 @@
         "thickness_nm": {
           "vary": true,
           "min": 1.0,
-          "max": 100.0,
+          "max": 60.0,
           "transform": "log"
         },
         "rave_nm": {
           "vary": true,
-          "min": 0.5,
-          "max": 200.0,
-          "transform": "log"
+          "min": 5.0,
+          "max": 120.0,
+          "transform": "log",
+          "meaning": "arithmetic mean radius of the single-lognormal distribution"
         },
         "sig_l": {
           "vary": true,
-          "min": 0.02,
-          "max": 2.0,
+          "min": 0.08,
+          "max": 1.0,
           "transform": "log"
+        }
+      },
+      "constraints": {
+        "thickness_tail": {
+          "enabled": true,
+          "percentile": 0.95,
+          "factor": 2.0,
+          "mode": "reject"
         }
       },
       "fixed_parameters": {

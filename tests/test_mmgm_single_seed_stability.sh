@@ -54,6 +54,13 @@ summary_columns = [
     "thickness_nm",
     "rave_nm",
     "sig_l",
+    "mean_radius_nm",
+    "median_radius_nm",
+    "mode_radius_nm",
+    "r_p95_nm",
+    "r_p99_nm",
+    "thickness_over_2rp95",
+    "thickness_over_2rp99",
     "json_file",
     "image_file",
 ]
@@ -97,6 +104,7 @@ for json_file in json_files:
     result = json.loads(json_file.read_text(encoding="utf-8"))
     params = result.get("best_parameters", {})
     objective = result.get("objective", {})
+    descriptors = result.get("distribution_descriptors", {})
     rows.append(
         {
             "generation": generation,
@@ -108,6 +116,17 @@ for json_file in json_files:
             "thickness_nm": required_number(params, "thickness_nm", json_file),
             "rave_nm": required_number(params, "rave_nm", json_file),
             "sig_l": required_number(params, "sig_l", json_file),
+            "mean_radius_nm": required_number(descriptors, "mean_radius_nm", json_file),
+            "median_radius_nm": required_number(descriptors, "median_radius_nm", json_file),
+            "mode_radius_nm": required_number(descriptors, "mode_radius_nm", json_file),
+            "r_p95_nm": required_number(descriptors, "r_p95_nm", json_file),
+            "r_p99_nm": required_number(descriptors, "r_p99_nm", json_file),
+            "thickness_over_2rp95": required_number(
+                descriptors, "thickness_over_2rp95", json_file
+            ),
+            "thickness_over_2rp99": required_number(
+                descriptors, "thickness_over_2rp99", json_file
+            ),
             "json_file": json_file.as_posix(),
             "image_file": result.get("image_file", ""),
         }
