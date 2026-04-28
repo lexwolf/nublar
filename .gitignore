@@ -44,6 +44,7 @@ scripts/gnuplot/experimental/
 scripts/gnuplot/comparisons/
 scripts/gnuplot/tests/*.gp
 scripts/gnuplot/tests/mmgm_single_seed_stability/
+scripts/gnuplot/tests/mmgm_single_global_seed_stability/
 
 # Editor / OS noise
 *~

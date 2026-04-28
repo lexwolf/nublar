@@ -21,6 +21,8 @@ if str(THIS_DIR) not in sys.path:
 from model import bruggeman_lib, mg_lib, mmgm_single_lib  # noqa: E402
 
 VERY_LARGE_SSE = 1.0e99
+LOGNORMAL_P95_Z = 1.6448536269514722
+LOGNORMAL_P99_Z = 2.3263478740408408
 
 
 class OptimizerError(RuntimeError):
@@ -76,6 +78,14 @@ class FitWindow:
 
 
 @dataclass(frozen=True)
+class ThicknessTailConstraint:
+    enabled: bool = False
+    percentile: float = 0.95
+    factor: float = 2.0
+    mode: str = "reject"
+
+
+@dataclass(frozen=True)
 class ModelBounds:
     effe_min: float
     effe_max: float
@@ -83,9 +93,16 @@ class ModelBounds:
     thickness_max_nm: float
     thickness_transform: str
     fit_window: FitWindow
+    rave_min_nm: float | None = None
+    rave_max_nm: float | None = None
+    rave_transform: str = "none"
+    sig_l_min: float | None = None
+    sig_l_max: float | None = None
+    sig_l_transform: str = "none"
     population_size: int = 24
     max_generations: int = 80
     seed: int = 12345
+    thickness_tail_constraint: ThicknessTailConstraint = ThicknessTailConstraint()
 
 
 @dataclass(frozen=True)
@@ -99,6 +116,8 @@ class SpectrumFit:
     sse: float
     objective_points: int
     invalid_points: int
+    rave_nm: float | None = None
+    sig_l: float | None = None
 
 
 @dataclass(frozen=True)
@@ -217,14 +236,40 @@ def _strip_markdown_fence(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def read_thickness_tail_constraint(model: dict[str, Any]) -> ThicknessTailConstraint:
+    raw = model.get("constraints", {}).get("thickness_tail", {})
+    if not raw:
+        return ThicknessTailConstraint()
+
+    constraint = ThicknessTailConstraint(
+        enabled=bool(raw.get("enabled", False)),
+        percentile=float(raw.get("percentile", 0.95)),
+        factor=float(raw.get("factor", 2.0)),
+        mode=str(raw.get("mode", "reject")),
+    )
+    if constraint.percentile not in {0.95, 0.99}:
+        raise OptimizerError(
+            "Invalid thickness_tail percentile: "
+            f"{constraint.percentile}. Supported values are 0.95 and 0.99."
+        )
+    if constraint.factor <= 0.0:
+        raise OptimizerError(
+            f"Invalid thickness_tail factor: {constraint.factor}. Must be positive."
+        )
+    if constraint.mode != "reject":
+        raise OptimizerError(
+            f"Invalid thickness_tail mode: {constraint.mode}. Only 'reject' is supported."
+        )
+    return constraint
+
+
 def read_bounds(path: Path, model_name: str) -> ModelBounds:
     raw = json.loads(_strip_markdown_fence(path.read_text(encoding="utf-8")))
     objective = raw["global"]["objective"]
     fit_window_raw = objective["fit_window_nm"]
-    params = raw["models"][model_name]["native_fit_parameters"]
-    differential_evolution = (
-        raw["models"][model_name].get("optimizer", {}).get("differential_evolution", {})
-    )
+    model = raw["models"][model_name]
+    params = model["native_fit_parameters"]
+    differential_evolution = model.get("optimizer", {}).get("differential_evolution", {})
     fit_window = FitWindow(
         min_nm=float(fit_window_raw["min"]),
         max_nm=float(fit_window_raw["max"]),
@@ -241,9 +286,28 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
         thickness_max_nm=float(params["thickness_nm"]["max"]),
         thickness_transform=str(params["thickness_nm"].get("transform", "log")),
         fit_window=fit_window,
+        rave_min_nm=(
+            float(params["rave_nm"]["min"]) if params.get("rave_nm") else None
+        ),
+        rave_max_nm=(
+            float(params["rave_nm"]["max"]) if params.get("rave_nm") else None
+        ),
+        rave_transform=(
+            str(params["rave_nm"].get("transform", "none"))
+            if params.get("rave_nm")
+            else "none"
+        ),
+        sig_l_min=(float(params["sig_l"]["min"]) if params.get("sig_l") else None),
+        sig_l_max=(float(params["sig_l"]["max"]) if params.get("sig_l") else None),
+        sig_l_transform=(
+            str(params["sig_l"].get("transform", "none"))
+            if params.get("sig_l")
+            else "none"
+        ),
         population_size=int(differential_evolution.get("population_size", 24)),
         max_generations=int(differential_evolution.get("max_generations", 80)),
         seed=int(differential_evolution.get("seed", 12345)),
+        thickness_tail_constraint=read_thickness_tail_constraint(model),
     )
 
 
@@ -272,6 +336,8 @@ def prepare_trial_model(
     geometry: str,
     effe: float,
     thickness_nm: float,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
 ) -> dict[str, Any]:
     model = json.loads(json.dumps(template))
     grid_min, grid_max, grid_step, _ = spectrum.grid
@@ -285,11 +351,20 @@ def prepare_trial_model(
         if layer.get("kind") != "effective_medium":
             continue
         layer["thickness_nm"] = thickness_nm
-        model_lib.configure_effective_medium(
-            layer["effective_medium"],
-            geometry=geometry,
-            effe=effe,
-        )
+        if rave_nm is None or sig_l is None:
+            model_lib.configure_effective_medium(
+                layer["effective_medium"],
+                geometry=geometry,
+                effe=effe,
+            )
+        else:
+            model_lib.configure_effective_medium(
+                layer["effective_medium"],
+                geometry=geometry,
+                effe=effe,
+                rave_nm=rave_nm,
+                sig_l=sig_l,
+            )
         return model
 
     raise OptimizerError("Template JSON has no effective_medium layer")
@@ -532,40 +607,168 @@ def parameters_from_unit_vector(
     return parameters
 
 
-def h_ag_values(parameters: Sequence[tuple[float, float]]) -> list[float]:
-    return [effe * thickness_nm for effe, thickness_nm in parameters]
+def require_mmgm_single_bounds(bounds: ModelBounds) -> None:
+    missing = []
+    if bounds.rave_min_nm is None or bounds.rave_max_nm is None:
+        missing.append("rave_nm")
+    if bounds.sig_l_min is None or bounds.sig_l_max is None:
+        missing.append("sig_l")
+    if missing:
+        raise OptimizerError(
+            "MMGM single-lognormal bounds are missing parameter(s): "
+            + ", ".join(missing)
+        )
 
 
-def violates_monotonic_h_ag(parameters: Sequence[tuple[float, float]]) -> bool:
+def mmgm_single_global_parameters_from_unit_vector(
+    unit_values: Sequence[float],
+    bounds: ModelBounds,
+    n_spectra: int,
+) -> list[tuple[float, float, float, float]]:
+    require_mmgm_single_bounds(bounds)
+    if len(unit_values) != 4 * n_spectra:
+        raise OptimizerError(
+            f"MMGM single global parameter vector must have {4 * n_spectra} values"
+        )
+    assert bounds.rave_min_nm is not None
+    assert bounds.rave_max_nm is not None
+    assert bounds.sig_l_min is not None
+    assert bounds.sig_l_max is not None
+    parameters: list[tuple[float, float, float, float]] = []
+    for spectrum_index in range(n_spectra):
+        index = 4 * spectrum_index
+        effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
+        thickness_nm = transform_value(
+            bounds.thickness_min_nm,
+            bounds.thickness_max_nm,
+            bounds.thickness_transform,
+            unit_values[index + 1],
+        )
+        rave_nm = transform_value(
+            bounds.rave_min_nm,
+            bounds.rave_max_nm,
+            bounds.rave_transform,
+            unit_values[index + 2],
+        )
+        sig_l = transform_value(
+            bounds.sig_l_min,
+            bounds.sig_l_max,
+            bounds.sig_l_transform,
+            unit_values[index + 3],
+        )
+        parameters.append((effe, thickness_nm, rave_nm, sig_l))
+    return parameters
+
+
+def h_ag_values(parameters: Sequence[Sequence[float]]) -> list[float]:
+    return [parameter[0] * parameter[1] for parameter in parameters]
+
+
+def violates_monotonic_h_ag(parameters: Sequence[Sequence[float]]) -> bool:
     values = h_ag_values(parameters)
     return any(left > right for left, right in zip(values, values[1:], strict=False))
 
 
+def lognormal_radius_descriptors(
+    *, rave_nm: float, sig_l: float, thickness_nm: float
+) -> dict[str, float]:
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
+    r_p95 = math.exp(mu_l + LOGNORMAL_P95_Z * sig_l)
+    r_p99 = math.exp(mu_l + LOGNORMAL_P99_Z * sig_l)
+    return {
+        "mean_radius_nm": rave_nm,
+        "median_radius_nm": math.exp(mu_l),
+        "mode_radius_nm": math.exp(mu_l - sig_l * sig_l),
+        "r_p95_nm": r_p95,
+        "r_p99_nm": r_p99,
+        "thickness_over_2rp95": thickness_nm / (2.0 * r_p95),
+        "thickness_over_2rp99": thickness_nm / (2.0 * r_p99),
+    }
+
+
+def lognormal_radius_percentile(rave_nm: float, sig_l: float, percentile: float) -> float:
+    z_value = {
+        0.95: LOGNORMAL_P95_Z,
+        0.99: LOGNORMAL_P99_Z,
+    }[percentile]
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
+    return math.exp(mu_l + z_value * sig_l)
+
+
+def violates_thickness_tail_constraint(
+    thickness_nm: float,
+    rave_nm: float,
+    sig_l: float,
+    bounds: ModelBounds,
+) -> bool:
+    constraint = bounds.thickness_tail_constraint
+    if not constraint.enabled:
+        return False
+    radius_nm = lognormal_radius_percentile(rave_nm, sig_l, constraint.percentile)
+    return thickness_nm > constraint.factor * radius_nm
+
+
+def parameter_count_for_model(model_name: str) -> int:
+    return 4 if model_name in {"mmgm_spheres_single", "mmgm_holes_single"} else 2
+
+
 def feasible_initial_population(
     *,
+    model_name: str,
     n_spectra: int,
     bounds: ModelBounds,
     population_count: int,
 ) -> list[list[float]]:
     rng = random.Random(bounds.seed)
-    population: list[list[float]] = [[0.5] * (2 * n_spectra)]
+    parameters_per_spectrum = parameter_count_for_model(model_name)
+    population: list[list[float]] = [[0.5] * (parameters_per_spectrum * n_spectra)]
     while len(population) < population_count:
-        thickness_unit = rng.random()
-        thickness_nm = transform_value(
-            bounds.thickness_min_nm,
-            bounds.thickness_max_nm,
-            bounds.thickness_transform,
-            thickness_unit,
-        )
-        h_min = bounds.effe_min * thickness_nm
-        h_max = bounds.effe_max * thickness_nm
-        h_units = sorted(rng.random() for _ in range(n_spectra))
-        candidate: list[float] = []
-        for h_unit in h_units:
-            h_ag_nm = h_min + h_unit * (h_max - h_min)
-            effe = h_ag_nm / thickness_nm
-            effe_unit = (effe - bounds.effe_min) / (bounds.effe_max - bounds.effe_min)
-            candidate.extend([effe_unit, thickness_unit])
+        candidate_parameters: list[tuple[float, list[float]]] = []
+        attempts = 0
+        while len(candidate_parameters) < n_spectra:
+            attempts += 1
+            if attempts > 10000:
+                raise OptimizerError(
+                    "Could not build a feasible initial MMGM population; "
+                    "check bounds and thickness-tail constraint."
+                )
+            effe_unit = rng.random()
+            thickness_unit = rng.random()
+            effe = transform_value(bounds.effe_min, bounds.effe_max, "none", effe_unit)
+            thickness_nm = transform_value(
+                bounds.thickness_min_nm,
+                bounds.thickness_max_nm,
+                bounds.thickness_transform,
+                thickness_unit,
+            )
+            unit_values = [effe_unit, thickness_unit]
+            if parameters_per_spectrum == 4:
+                require_mmgm_single_bounds(bounds)
+                assert bounds.rave_min_nm is not None
+                assert bounds.rave_max_nm is not None
+                assert bounds.sig_l_min is not None
+                assert bounds.sig_l_max is not None
+                rave_unit = rng.random()
+                sig_l_unit = rng.random()
+                rave_nm = transform_value(
+                    bounds.rave_min_nm,
+                    bounds.rave_max_nm,
+                    bounds.rave_transform,
+                    rave_unit,
+                )
+                sig_l = transform_value(
+                    bounds.sig_l_min,
+                    bounds.sig_l_max,
+                    bounds.sig_l_transform,
+                    sig_l_unit,
+                )
+                if violates_thickness_tail_constraint(thickness_nm, rave_nm, sig_l, bounds):
+                    continue
+                unit_values.extend([rave_unit, sig_l_unit])
+            candidate_parameters.append((effe * thickness_nm, unit_values))
+        candidate = []
+        for _, unit_values in sorted(candidate_parameters, key=lambda item: item[0]):
+            candidate.extend(unit_values)
         population.append(candidate)
     return population
 
@@ -582,6 +785,8 @@ def evaluate_spectrum_candidate(
     thickness_nm: float,
     trial_json_path: Path,
     trial_spectrum_path: Path,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
 ) -> tuple[float, int, int]:
     prepared_model = prepare_trial_model(
         template=template,
@@ -590,6 +795,8 @@ def evaluate_spectrum_candidate(
         geometry=geometry,
         effe=effe,
         thickness_nm=thickness_nm,
+        rave_nm=rave_nm,
+        sig_l=sig_l,
     )
     write_trial_json(trial_json_path, prepared_model)
     trial_spectrum_path.parent.mkdir(parents=True, exist_ok=True)
@@ -613,25 +820,43 @@ def optimize_global(
     template: dict[str, Any],
     bounds: ModelBounds,
     model: ModelLib,
+    model_name: str,
     geometry: str,
     spectra: Sequence[TimedSpectrum],
     paths: OutputPaths,
 ) -> GlobalFit:
     best: GlobalFit | None = None
-    n_parameters = 2 * len(spectra)
+    parameters_per_spectrum = parameter_count_for_model(model_name)
+    n_parameters = parameters_per_spectrum * len(spectra)
     tmp_trial_dir = paths.tmp_dir / "trials"
 
     def evaluate_unit_vector(unit_values: Sequence[float]) -> float:
         nonlocal best
-        parameters = parameters_from_unit_vector(unit_values, bounds)
+        if parameters_per_spectrum == 4:
+            parameters = mmgm_single_global_parameters_from_unit_vector(
+                unit_values, bounds, len(spectra)
+            )
+            if any(
+                violates_thickness_tail_constraint(
+                    thickness_nm, rave_nm, sig_l, bounds
+                )
+                for _, thickness_nm, rave_nm, sig_l in parameters
+            ):
+                return VERY_LARGE_SSE
+        else:
+            parameters = parameters_from_unit_vector(unit_values, bounds)
         if violates_monotonic_h_ag(parameters):
             return VERY_LARGE_SSE
 
         fits: list[SpectrumFit] = []
         total_sse = 0.0
-        for index, (timed_spectrum, (effe, thickness_nm)) in enumerate(
+        for index, (timed_spectrum, parameter_set) in enumerate(
             zip(spectra, parameters, strict=True)
         ):
+            effe = parameter_set[0]
+            thickness_nm = parameter_set[1]
+            rave_nm = parameter_set[2] if parameters_per_spectrum == 4 else None
+            sig_l = parameter_set[3] if parameters_per_spectrum == 4 else None
             trial_stem = f"{timed_spectrum.spectrum.basename}_global_trial_{index}"
             trial_json_path = tmp_trial_dir / f"{trial_stem}.json"
             trial_spectrum_path = tmp_trial_dir / f"{trial_stem}.dat"
@@ -646,6 +871,8 @@ def optimize_global(
                 thickness_nm=thickness_nm,
                 trial_json_path=trial_json_path,
                 trial_spectrum_path=trial_spectrum_path,
+                rave_nm=rave_nm,
+                sig_l=sig_l,
             )
             total_sse += sse
             fits.append(
@@ -660,6 +887,8 @@ def optimize_global(
                     sse=sse,
                     objective_points=valid_points,
                     invalid_points=invalid_points,
+                    rave_nm=rave_nm,
+                    sig_l=sig_l,
                 )
             )
 
@@ -689,9 +918,10 @@ def optimize_global(
             "SciPy is required for global optimization. Install scipy to use this tool."
         ) from exc
 
-    scipy_popsize = max(1, math.ceil(bounds.population_size / float(n_parameters)))
+    scipy_popsize = max(2, math.ceil(bounds.population_size / float(n_parameters)))
     population_count = max(5, scipy_popsize * n_parameters)
     init_population = feasible_initial_population(
+        model_name=model_name,
         n_spectra=len(spectra),
         bounds=bounds,
         population_count=population_count,
@@ -730,8 +960,11 @@ def write_gnuplot_script(
     title = (
         f"GLOBAL {model.DISPLAY_NAME} {geometry} fit {experimental.basename}: "
         f"effe={fit.effe:.5g}, d={fit.thickness_nm:.5g} nm, "
-        f"hAg={fit.h_ag_nm:.5g} nm, SSE={fit.sse:.5g}"
+        f"hAg={fit.h_ag_nm:.5g} nm"
     )
+    if fit.rave_nm is not None and fit.sig_l is not None:
+        title += f", rave={fit.rave_nm:.5g} nm, sigL={fit.sig_l:.5g}"
+    title += f", SSE={fit.sse:.5g}"
     path.write_text(
         "\n".join(
             [
@@ -785,6 +1018,14 @@ def write_result_json(
     grid_min, grid_max, grid_step, full_spectrum_points = experimental.grid
     mse = fit.sse / fit.objective_points
     rmse = math.sqrt(mse)
+    best_parameters = {
+        "effe": fit.effe,
+        "thickness_nm": fit.thickness_nm,
+    }
+    if fit.rave_nm is not None and fit.sig_l is not None:
+        best_parameters["rave_nm"] = fit.rave_nm
+        best_parameters["sig_l"] = fit.sig_l
+    best_parameters["h_ag_nm"] = fit.h_ag_nm
     result = {
         "model": model.MODEL_NAME,
         "geometry": geometry,
@@ -793,11 +1034,7 @@ def write_result_json(
         "theoretical_file": project_relative(theoretical_path),
         "gnuplot_script": project_relative(gnuplot_path),
         "image_file": project_relative(image_path),
-        "best_parameters": {
-            "effe": fit.effe,
-            "thickness_nm": fit.thickness_nm,
-            "h_ag_nm": fit.h_ag_nm,
-        },
+        "best_parameters": best_parameters,
         "objective_window_nm": {
             "min": bounds.fit_window.min_nm,
             "max": bounds.fit_window.max_nm,
@@ -820,6 +1057,12 @@ def write_result_json(
         },
         "full_spectrum_points": full_spectrum_points,
     }
+    if fit.rave_nm is not None and fit.sig_l is not None:
+        result["distribution_descriptors"] = lognormal_radius_descriptors(
+            rave_nm=fit.rave_nm,
+            sig_l=fit.sig_l,
+            thickness_nm=fit.thickness_nm,
+        )
     if fit.invalid_points > 0:
         result["warnings"] = ["non_finite_points_present"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -854,21 +1097,24 @@ def write_global_summary_json(
             "seed": bounds.seed,
             "max_generations": bounds.max_generations,
             "population_size": bounds.population_size,
-            "scipy_popsize": max(1, math.ceil(bounds.population_size / float(n_parameters))),
+            "scipy_popsize": max(2, math.ceil(bounds.population_size / float(n_parameters))),
             "bounds": asdict(bounds),
         },
-        "spectra": [
-            {
-                "time_s": fit.time_s,
-                "spectrum": fit.experimental.basename,
-                "sse": fit.sse,
-                "effe": fit.effe,
-                "thickness_nm": fit.thickness_nm,
-                "h_ag_nm": fit.h_ag_nm,
-            }
-            for fit in global_fit.spectra
-        ],
+        "spectra": [],
     }
+    for fit in global_fit.spectra:
+        spectrum_result = {
+            "time_s": fit.time_s,
+            "spectrum": fit.experimental.basename,
+            "sse": fit.sse,
+            "effe": fit.effe,
+            "thickness_nm": fit.thickness_nm,
+        }
+        if fit.rave_nm is not None and fit.sig_l is not None:
+            spectrum_result["rave_nm"] = fit.rave_nm
+            spectrum_result["sig_l"] = fit.sig_l
+        spectrum_result["h_ag_nm"] = fit.h_ag_nm
+        result["spectra"].append(spectrum_result)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
@@ -880,12 +1126,6 @@ def run_gnuplot(script_path: Path) -> None:
 
 
 def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelection) -> int:
-    if selection.model in {"mmgm_spheres_single", "mmgm_holes_single"}:
-        raise OptimizerError(
-            "Global MMGM single-lognormal mode is scaffolded but not implemented yet. "
-            "Supported global modes are --mg-spheres, --mg-holes, "
-            "--bruggeman-spheres, and --bruggeman-holes."
-        )
     if not args.transmittance_exe.exists():
         raise OptimizerError(
             f"Missing forward executable: {args.transmittance_exe}. Run `make bin/transmittance`."
@@ -932,15 +1172,23 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
     paths.image_dir.mkdir(parents=True, exist_ok=True)
     paths.tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    n_parameters = 2 * len(timed_spectra)
+    n_parameters = parameter_count_for_model(selection.model) * len(timed_spectra)
+    optimizer_label = (
+        f"DE seed={bounds.seed}, pop={bounds.population_size}, "
+        f"gen={bounds.max_generations}"
+        if selection.model in {"mmgm_spheres_single", "mmgm_holes_single"}
+        else (
+            "differential_evolution, "
+            f"seed={bounds.seed}, population_size={bounds.population_size}, "
+            f"max_generations={bounds.max_generations}"
+        )
+    )
     print(
         f"{selected_lib.DISPLAY_NAME} {selection.geometry} global fit:\n"
         f"  spectra: {len(timed_spectra)}\n"
         f"  parameters: {n_parameters}\n"
         "  constraint: hAg monotonic increasing\n"
-        "  optimizer: differential_evolution, "
-        f"seed={bounds.seed}, population_size={bounds.population_size}, "
-        f"max_generations={bounds.max_generations}",
+        f"  optimizer: {optimizer_label}",
         flush=True,
     )
 
@@ -949,6 +1197,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         template=template,
         bounds=bounds,
         model=selected_lib,
+        model_name=selection.model,
         geometry=selection.geometry,
         spectra=timed_spectra,
         paths=paths,
