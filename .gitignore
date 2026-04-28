@@ -39,6 +39,9 @@ img/
 # Generated gnuplot scripts
 scripts/gnuplot/output/
 scripts/gnuplot/optimal/
+scripts/gnuplot/experimental/
+scripts/gnuplot/comparisons/
+scripts/gnuplot/tests/*.gp
 scripts/gnuplot/tests/mmgm_single_seed_stability/
 
 # Editor / OS noise
