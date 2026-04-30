@@ -60,6 +60,14 @@ class ThicknessProxyResult:
     formula: str
 
 
+@dataclass
+class SingleLognormalDescriptor:
+    mean_nm: float
+    std_nm: float
+    mu_ln: float
+    sigma_ln: float
+
+
 THICKNESS_PROXY_CHOICES = (
     "equivalent_thickness_nm",
     "sphere_r95_diameter",
@@ -284,6 +292,53 @@ def compute_thickness_proxy(
     raise ExperimentalInputError(f"Unsupported thickness proxy: {thickness_proxy_name}")
 
 
+def compute_single_lognormal_descriptor(
+    radii_nm: list[float],
+    *,
+    time_s: int,
+    radius_proxy_name: str,
+) -> SingleLognormalDescriptor:
+    if not radii_nm:
+        raise ExperimentalInputError(
+            f"No pooled radii available for {time_s}s with radius proxy {radius_proxy_name}"
+        )
+    if any((not math.isfinite(radius)) or radius <= 0.0 for radius in radii_nm):
+        raise ExperimentalInputError(
+            f"Pooled radii must be positive and finite for {time_s}s "
+            f"with radius proxy {radius_proxy_name}"
+        )
+
+    mean_nm, std_nm = mean_std(radii_nm)
+    if not math.isfinite(mean_nm) or mean_nm <= 0.0:
+        raise ExperimentalInputError(
+            f"Mean pooled radius must be positive and finite for {time_s}s "
+            f"with radius proxy {radius_proxy_name}"
+        )
+    if not math.isfinite(std_nm):
+        raise ExperimentalInputError(
+            f"Pooled radius standard deviation must be finite for {time_s}s "
+            f"with radius proxy {radius_proxy_name}"
+        )
+    if std_nm < 0.0:
+        raise ExperimentalInputError(
+            f"Pooled radius standard deviation must be non-negative for {time_s}s "
+            f"with radius proxy {radius_proxy_name}"
+        )
+
+    if std_nm <= 1e-12 * mean_nm:
+        sigma_ln = 0.0
+    else:
+        sigma_ln = math.sqrt(math.log(1.0 + (std_nm / mean_nm) ** 2))
+    mu_ln = math.log(mean_nm) - 0.5 * sigma_ln**2
+
+    return SingleLognormalDescriptor(
+        mean_nm=mean_nm,
+        std_nm=std_nm,
+        mu_ln=mu_ln,
+        sigma_ln=sigma_ln,
+    )
+
+
 def validate_proxy_combination(
     geometry: str,
     radius_proxy_name: str,
@@ -428,6 +483,11 @@ def build_rows(
         )
 
         fit = fit_two_lognormal_mixture(pooled_radii)
+        single_lognormal = compute_single_lognormal_descriptor(
+            pooled_radii,
+            time_s=time_s,
+            radius_proxy_name=radius_proxy,
+        )
 
         rows.append(
             {
@@ -453,6 +513,14 @@ def build_rows(
                 "distribution_fit_converged": int(fit.converged),
                 "distribution_fit_iterations": fit.n_iter,
                 "distribution_sample_count": fit.n_samples,
+                # In MMGM workflows, Rave must be interpreted as the arithmetic mean
+                # implied by the selected radius distribution, not as an independent
+                # optical fitting parameter.
+                "single_lognormal_Rave_nm": single_lognormal.mean_nm,
+                "single_lognormal_muL": single_lognormal.mu_ln,
+                "single_lognormal_sigL": single_lognormal.sigma_ln,
+                "single_lognormal_std_nm": single_lognormal.std_nm,
+                "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
                 "mixture_weight_1": fit.component_1.weight,
                 "muL1": fit.component_1.mu_ln,
                 "sigL1": fit.component_1.sigma_ln,
@@ -465,6 +533,20 @@ def build_rows(
                 "component_2_std_nm": fit.component_2.std_nm,
                 "distribution_mean_nm": fit.mixture_mean_nm,
                 "distribution_std_nm": fit.mixture_std_nm,
+                "double_lognormal_weight_1": fit.component_1.weight,
+                "double_lognormal_Rave_1_nm": fit.component_1.mean_nm,
+                "double_lognormal_muL_1": fit.component_1.mu_ln,
+                "double_lognormal_sigL_1": fit.component_1.sigma_ln,
+                "double_lognormal_std_1_nm": fit.component_1.std_nm,
+                "double_lognormal_weight_2": fit.component_2.weight,
+                "double_lognormal_Rave_2_nm": fit.component_2.mean_nm,
+                "double_lognormal_muL_2": fit.component_2.mu_ln,
+                "double_lognormal_sigL_2": fit.component_2.sigma_ln,
+                "double_lognormal_std_2_nm": fit.component_2.std_nm,
+                "double_lognormal_Rave_total_nm": fit.mixture_mean_nm,
+                "double_lognormal_std_total_nm": fit.mixture_std_nm,
+                "double_lognormal_log_likelihood": fit.log_likelihood,
+                "double_lognormal_bic": fit.bic,
                 "equivalent_thickness_nm": selected_thickness.value_nm,
                 "equivalent_thickness_nm_std": selected_thickness.std_nm,
                 "afm_equivalent_thickness_nm": afm_thickness_mu,
@@ -514,6 +596,11 @@ CSV_FIELDNAMES = [
     "distribution_fit_converged",
     "distribution_fit_iterations",
     "distribution_sample_count",
+    "single_lognormal_Rave_nm",
+    "single_lognormal_muL",
+    "single_lognormal_sigL",
+    "single_lognormal_std_nm",
+    "single_lognormal_fit_method",
     "mixture_weight_1",
     "muL1",
     "sigL1",
@@ -526,6 +613,20 @@ CSV_FIELDNAMES = [
     "component_2_std_nm",
     "distribution_mean_nm",
     "distribution_std_nm",
+    "double_lognormal_weight_1",
+    "double_lognormal_Rave_1_nm",
+    "double_lognormal_muL_1",
+    "double_lognormal_sigL_1",
+    "double_lognormal_std_1_nm",
+    "double_lognormal_weight_2",
+    "double_lognormal_Rave_2_nm",
+    "double_lognormal_muL_2",
+    "double_lognormal_sigL_2",
+    "double_lognormal_std_2_nm",
+    "double_lognormal_Rave_total_nm",
+    "double_lognormal_std_total_nm",
+    "double_lognormal_log_likelihood",
+    "double_lognormal_bic",
     "equivalent_thickness_nm",
     "equivalent_thickness_nm_std",
     "afm_equivalent_thickness_nm",
@@ -557,9 +658,17 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
         "# time_s n_afm_scans coverage coverage_std effe_proxy effe_proxy_name effe_proxy_formula "
         "afm_Rave_nm afm_Rave_nm_std radius_proxy_name dist_type axis_name fit_status fit_path "
         "log_likelihood bic fit_converged fit_iterations fit_samples "
+        "single_lognormal_Rave_nm single_lognormal_muL single_lognormal_sigL "
+        "single_lognormal_std_nm single_lognormal_fit_method "
         "w1 muL1 sigL1 mean1_nm std1_nm "
         "w2 muL2 sigL2 mean2_nm std2_nm "
         "dist_mean_nm dist_std_nm "
+        "double_lognormal_weight_1 double_lognormal_Rave_1_nm "
+        "double_lognormal_muL_1 double_lognormal_sigL_1 double_lognormal_std_1_nm "
+        "double_lognormal_weight_2 double_lognormal_Rave_2_nm "
+        "double_lognormal_muL_2 double_lognormal_sigL_2 double_lognormal_std_2_nm "
+        "double_lognormal_Rave_total_nm double_lognormal_std_total_nm "
+        "double_lognormal_log_likelihood double_lognormal_bic "
         "eq_thickness_nm eq_thickness_nm_std density_um2 density_um2_std "
         "mean_height_nm mean_height_nm_std "
         "n_lambda lamin_nm lamax_nm dlam_nm lambda_grid_is_uniform "
@@ -581,9 +690,20 @@ def write_model_input_dat(rows: list[dict[str, Any]], path: Path) -> None:
             "{distribution_type} {distribution_axis_name} {distribution_fit_status} {distribution_fit_path} "
             "{distribution_log_likelihood:.10g} {distribution_bic:.10g} "
             "{distribution_fit_converged} {distribution_fit_iterations} {distribution_sample_count} "
+            "{single_lognormal_Rave_nm:.10g} {single_lognormal_muL:.10g} "
+            "{single_lognormal_sigL:.10g} {single_lognormal_std_nm:.10g} "
+            "{single_lognormal_fit_method} "
             "{mixture_weight_1:.10g} {muL1:.10g} {sigL1:.10g} {component_1_mean_nm:.10g} {component_1_std_nm:.10g} "
             "{mixture_weight_2:.10g} {muL2:.10g} {sigL2:.10g} {component_2_mean_nm:.10g} {component_2_std_nm:.10g} "
             "{distribution_mean_nm:.10g} {distribution_std_nm:.10g} "
+            "{double_lognormal_weight_1:.10g} {double_lognormal_Rave_1_nm:.10g} "
+            "{double_lognormal_muL_1:.10g} {double_lognormal_sigL_1:.10g} "
+            "{double_lognormal_std_1_nm:.10g} "
+            "{double_lognormal_weight_2:.10g} {double_lognormal_Rave_2_nm:.10g} "
+            "{double_lognormal_muL_2:.10g} {double_lognormal_sigL_2:.10g} "
+            "{double_lognormal_std_2_nm:.10g} "
+            "{double_lognormal_Rave_total_nm:.10g} {double_lognormal_std_total_nm:.10g} "
+            "{double_lognormal_log_likelihood:.10g} {double_lognormal_bic:.10g} "
             "{equivalent_thickness_nm:.10g} {equivalent_thickness_nm_std:.10g} "
             "{number_density_per_um2:.10g} {number_density_per_um2_std:.10g} "
             "{mean_island_height_nm:.10g} {mean_island_height_nm_std:.10g} "
