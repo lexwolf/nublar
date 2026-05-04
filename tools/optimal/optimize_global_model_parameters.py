@@ -23,6 +23,9 @@ from model import bruggeman_lib, mg_lib, mmgm_single_lib  # noqa: E402
 VERY_LARGE_SSE = 1.0e99
 LOGNORMAL_P95_Z = 1.6448536269514722
 LOGNORMAL_P99_Z = 2.3263478740408408
+MMGM_SINGLE_MODELS = {"mmgm_spheres_single", "mmgm_holes_single"}
+AFM_PRIOR_MODES = {"bounded", "fixed"}
+DEFAULT_AFM_PRIORS_MODE = "bounded"
 
 
 class OptimizerError(RuntimeError):
@@ -210,6 +213,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional AFM-derived prior bounds JSON. Supported only for "
             "mmgm_spheres_single and mmgm_holes_single."
+        ),
+    )
+    parser.add_argument(
+        "--afm-priors-mode",
+        choices=sorted(AFM_PRIOR_MODES),
+        default=DEFAULT_AFM_PRIORS_MODE,
+        help=(
+            "How to use AFM priors: 'bounded' keeps Rave and sig_l fitted within "
+            "AFM bounds; 'fixed' uses AFM reference values directly."
         ),
     )
     parser.add_argument("--seed", type=int, default=None)
@@ -788,11 +800,18 @@ def mmgm_single_global_parameters_from_unit_vector(
     n_spectra: int,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     spectrum_times_s: Sequence[int] | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
 ) -> list[tuple[float, float, float, float]]:
-    require_mmgm_single_bounds(bounds)
-    if len(unit_values) != 4 * n_spectra:
+    if afm_priors_mode not in AFM_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_priors_mode == "fixed" and afm_priors_by_time_s is None:
+        raise OptimizerError("AFM priors fixed mode requires AFM priors")
+
+    parameters_per_spectrum = 2 if afm_priors_mode == "fixed" else 4
+    expected_values = parameters_per_spectrum * n_spectra
+    if len(unit_values) != expected_values:
         raise OptimizerError(
-            f"MMGM single global parameter vector must have {4 * n_spectra} values"
+            f"MMGM single global parameter vector must have {expected_values} values"
         )
     if afm_priors_by_time_s is not None:
         if spectrum_times_s is None:
@@ -801,14 +820,24 @@ def mmgm_single_global_parameters_from_unit_vector(
             raise OptimizerError(
                 "AFM priors require one spectrum time per MMGM spectrum"
             )
-    assert bounds.rave_min_nm is not None
-    assert bounds.rave_max_nm is not None
-    assert bounds.sig_l_min is not None
-    assert bounds.sig_l_max is not None
+        require_afm_prior_times(
+            afm_priors_by_time_s=afm_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+    if afm_priors_mode == "bounded" or afm_priors_by_time_s is None:
+        require_mmgm_single_bounds(bounds)
+        assert bounds.rave_min_nm is not None
+        assert bounds.rave_max_nm is not None
+        assert bounds.sig_l_min is not None
+        assert bounds.sig_l_max is not None
     parameters: list[tuple[float, float, float, float]] = []
     for spectrum_index in range(n_spectra):
-        index = 4 * spectrum_index
+        index = parameters_per_spectrum * spectrum_index
         if afm_priors_by_time_s is None:
+            assert bounds.rave_min_nm is not None
+            assert bounds.rave_max_nm is not None
+            assert bounds.sig_l_min is not None
+            assert bounds.sig_l_max is not None
             rave_min_nm = bounds.rave_min_nm
             rave_max_nm = bounds.rave_max_nm
             sig_l_min = bounds.sig_l_min
@@ -820,10 +849,16 @@ def mmgm_single_global_parameters_from_unit_vector(
                 prior = afm_priors_by_time_s[time_s]
             except KeyError as exc:
                 raise OptimizerError(f"Missing AFM prior for spectrum time_s={time_s}") from exc
-            rave_min_nm = prior.rave_min_nm
-            rave_max_nm = prior.rave_max_nm
-            sig_l_min = prior.sig_l_min
-            sig_l_max = prior.sig_l_max
+            if afm_priors_mode == "fixed":
+                rave_min_nm = prior.rave_reference_nm
+                rave_max_nm = prior.rave_reference_nm
+                sig_l_min = prior.sig_l_reference
+                sig_l_max = prior.sig_l_reference
+            else:
+                rave_min_nm = prior.rave_min_nm
+                rave_max_nm = prior.rave_max_nm
+                sig_l_min = prior.sig_l_min
+                sig_l_max = prior.sig_l_max
         effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
         thickness_nm = transform_value(
             bounds.thickness_min_nm,
@@ -831,18 +866,22 @@ def mmgm_single_global_parameters_from_unit_vector(
             bounds.thickness_transform,
             unit_values[index + 1],
         )
-        rave_nm = transform_value(
-            rave_min_nm,
-            rave_max_nm,
-            bounds.rave_transform,
-            unit_values[index + 2],
-        )
-        sig_l = transform_value(
-            sig_l_min,
-            sig_l_max,
-            bounds.sig_l_transform,
-            unit_values[index + 3],
-        )
+        if afm_priors_mode == "fixed":
+            rave_nm = rave_min_nm
+            sig_l = sig_l_min
+        else:
+            rave_nm = transform_value(
+                rave_min_nm,
+                rave_max_nm,
+                bounds.rave_transform,
+                unit_values[index + 2],
+            )
+            sig_l = transform_value(
+                sig_l_min,
+                sig_l_max,
+                bounds.sig_l_transform,
+                unit_values[index + 3],
+            )
         parameters.append((effe, thickness_nm, rave_nm, sig_l))
     return parameters
 
@@ -895,8 +934,19 @@ def violates_thickness_tail_constraint(
     return thickness_nm > constraint.factor * radius_nm
 
 
-def parameter_count_for_model(model_name: str) -> int:
-    return 4 if model_name in {"mmgm_spheres_single", "mmgm_holes_single"} else 2
+def parameter_count_for_model(
+    model_name: str,
+    *,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_priors_enabled: bool = False,
+) -> int:
+    if afm_priors_mode not in AFM_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if model_name in MMGM_SINGLE_MODELS:
+        if afm_priors_enabled and afm_priors_mode == "fixed":
+            return 2
+        return 4
+    return 2
 
 
 def require_afm_prior_times(
@@ -922,11 +972,17 @@ def feasible_initial_population(
     population_count: int,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     spectrum_times_s: Sequence[int] | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
 ) -> list[list[float]]:
     rng = random.Random(bounds.seed)
-    parameters_per_spectrum = parameter_count_for_model(model_name)
+    afm_priors_enabled = afm_priors_by_time_s is not None
+    parameters_per_spectrum = parameter_count_for_model(
+        model_name,
+        afm_priors_mode=afm_priors_mode,
+        afm_priors_enabled=afm_priors_enabled,
+    )
     if afm_priors_by_time_s is not None:
-        if parameters_per_spectrum != 4:
+        if model_name not in MMGM_SINGLE_MODELS:
             raise OptimizerError("AFM priors are only supported for MMGM single models")
         require_afm_prior_times(
             afm_priors_by_time_s=afm_priors_by_time_s,
@@ -958,7 +1014,7 @@ def feasible_initial_population(
                 thickness_unit,
             )
             unit_values = [effe_unit, thickness_unit]
-            if parameters_per_spectrum == 4:
+            if model_name in MMGM_SINGLE_MODELS and parameters_per_spectrum == 4:
                 require_mmgm_single_bounds(bounds)
                 assert bounds.rave_min_nm is not None
                 assert bounds.rave_max_nm is not None
@@ -984,9 +1040,10 @@ def feasible_initial_population(
                     unit_values.extend([rave_unit, sig_l_unit])
             candidate_parameters.append((effe * thickness_nm, unit_values))
         candidate = []
+        candidate_violates_tail_constraint = False
         ordered_parameters = sorted(candidate_parameters, key=lambda item: item[0])
         for spectrum_index, (_, unit_values) in enumerate(ordered_parameters):
-            if parameters_per_spectrum == 4 and afm_priors_by_time_s is not None:
+            if afm_priors_by_time_s is not None:
                 assert spectrum_times_s is not None
                 prior = afm_priors_by_time_s[spectrum_times_s[spectrum_index]]
                 thickness_nm = transform_value(
@@ -995,6 +1052,17 @@ def feasible_initial_population(
                     bounds.thickness_transform,
                     unit_values[1],
                 )
+                if afm_priors_mode == "fixed":
+                    if violates_thickness_tail_constraint(
+                        thickness_nm,
+                        prior.rave_reference_nm,
+                        prior.sig_l_reference,
+                        bounds,
+                    ):
+                        candidate_violates_tail_constraint = True
+                        break
+                    candidate.extend(unit_values)
+                    continue
                 attempts = 0
                 while True:
                     attempts += 1
@@ -1026,6 +1094,8 @@ def feasible_initial_population(
                         break
                 unit_values = [*unit_values, rave_unit, sig_l_unit]
             candidate.extend(unit_values)
+        if candidate_violates_tail_constraint:
+            continue
         population.append(candidate)
     return population
 
@@ -1082,21 +1152,28 @@ def optimize_global(
     spectra: Sequence[TimedSpectrum],
     paths: OutputPaths,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
 ) -> GlobalFit:
     best: GlobalFit | None = None
-    parameters_per_spectrum = parameter_count_for_model(model_name)
+    afm_priors_enabled = afm_priors_by_time_s is not None
+    parameters_per_spectrum = parameter_count_for_model(
+        model_name,
+        afm_priors_mode=afm_priors_mode,
+        afm_priors_enabled=afm_priors_enabled,
+    )
     n_parameters = parameters_per_spectrum * len(spectra)
     tmp_trial_dir = paths.tmp_dir / "trials"
 
     def evaluate_unit_vector(unit_values: Sequence[float]) -> float:
         nonlocal best
-        if parameters_per_spectrum == 4:
+        if model_name in MMGM_SINGLE_MODELS:
             parameters = mmgm_single_global_parameters_from_unit_vector(
                 unit_values,
                 bounds,
                 len(spectra),
                 afm_priors_by_time_s=afm_priors_by_time_s,
                 spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
+                afm_priors_mode=afm_priors_mode,
             )
             if any(
                 violates_thickness_tail_constraint(
@@ -1191,6 +1268,7 @@ def optimize_global(
         population_count=population_count,
         afm_priors_by_time_s=afm_priors_by_time_s,
         spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
+        afm_priors_mode=afm_priors_mode,
     )
     differential_evolution(
         lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
@@ -1360,6 +1438,7 @@ def write_global_summary_json(
     geometry: str,
     n_parameters: int,
     afm_prior_config: AfmPriorConfig | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
 ) -> None:
     result = {
         "model": model.MODEL_NAME,
@@ -1388,6 +1467,7 @@ def write_global_summary_json(
     if afm_prior_config is not None:
         result["afm_priors"] = {
             "enabled": True,
+            "mode": afm_priors_mode,
             "path": project_relative(afm_prior_config.path),
             "source": afm_prior_config.source,
             "strategy": afm_prior_config.strategy,
@@ -1431,8 +1511,13 @@ def run_gnuplot(script_path: Path) -> None:
 
 def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelection) -> int:
     afm_prior_config: AfmPriorConfig | None = None
+    afm_priors_mode = str(args.afm_priors_mode)
+    if afm_priors_mode not in AFM_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_priors_mode == "fixed" and args.afm_priors_json is None:
+        raise OptimizerError("--afm-priors-mode fixed requires --afm-priors-json")
     if args.afm_priors_json is not None:
-        if selection.model not in {"mmgm_spheres_single", "mmgm_holes_single"}:
+        if selection.model not in MMGM_SINGLE_MODELS:
             raise OptimizerError(
                 "--afm-priors-json is supported only for "
                 "mmgm_spheres_single and mmgm_holes_single"
@@ -1490,7 +1575,14 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
     paths.image_dir.mkdir(parents=True, exist_ok=True)
     paths.tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    n_parameters = parameter_count_for_model(selection.model) * len(timed_spectra)
+    n_parameters = (
+        parameter_count_for_model(
+            selection.model,
+            afm_priors_mode=afm_priors_mode,
+            afm_priors_enabled=afm_prior_config is not None,
+        )
+        * len(timed_spectra)
+    )
     optimizer_label = (
         f"DE seed={bounds.seed}, pop={bounds.population_size}, "
         f"gen={bounds.max_generations}"
@@ -1512,6 +1604,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
     if afm_prior_config is not None:
         print(
             f"  AFM priors: {afm_prior_config.path}\n"
+            f"  AFM priors mode: {afm_priors_mode}\n"
             "  AFM prior distribution: "
             f"{afm_prior_config.source.get('distribution')}\n"
             "  AFM radius proxy: "
@@ -1531,6 +1624,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         afm_priors_by_time_s=(
             afm_prior_config.priors_by_time_s if afm_prior_config is not None else None
         ),
+        afm_priors_mode=afm_priors_mode,
     )
 
     for fit in global_fit.spectra:
@@ -1576,6 +1670,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         geometry=selection.geometry,
         n_parameters=n_parameters,
         afm_prior_config=afm_prior_config,
+        afm_priors_mode=afm_priors_mode,
     )
     print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")
     return 0
