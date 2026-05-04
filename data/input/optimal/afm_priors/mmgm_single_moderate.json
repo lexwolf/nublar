@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "source": {
+    "input_csv": "data/input/experimental/model_input.csv",
+    "radius_proxy_name": "volume_equivalent_radius_nm",
+    "distribution": "single_lognormal",
+    "model": "mmgm_single"
+  },
+  "strategy": {
+    "name": "moderate",
+    "radius_margin_low": 0.75,
+    "radius_margin_high": 1.5,
+    "sig_l_scale_low": 0.75,
+    "sig_l_scale_high": 1.25,
+    "sig_l_min": 0.15,
+    "sig_l_max": 0.9
+  },
+  "bounds_by_time_s": {
+    "10": {
+      "rave_nm": {
+        "min": 10.32256197851629,
+        "max": 20.64512395703258,
+        "reference": 13.763415971355053,
+        "source_field": "single_lognormal_Rave_nm"
+      },
+      "sig_l": {
+        "min": 0.418061980834851,
+        "max": 0.6967699680580851,
+        "reference": 0.5574159744464681,
+        "source_field": "single_lognormal_sigL"
+      },
+      "afm_reference": {
+        "single_lognormal_std_nm": 8.308327909411767,
+        "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
+        "effe_proxy": 0.45393462757604996,
+        "equivalent_thickness_nm": 1.3488924562640352,
+        "coverage_fraction": 0.3867645263671875
+      }
+    },
+    "20": {
+      "rave_nm": {
+        "min": 10.503696614056656,
+        "max": 21.007393228113312,
+        "reference": 14.004928818742208,
+        "source_field": "single_lognormal_Rave_nm"
+      },
+      "sig_l": {
+        "min": 0.3682027992712769,
+        "max": 0.6136713321187949,
+        "reference": 0.49093706569503587,
+        "source_field": "single_lognormal_sigL"
+      },
+      "afm_reference": {
+        "single_lognormal_std_nm": 7.311397412107101,
+        "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
+        "effe_proxy": 0.41626859298049435,
+        "equivalent_thickness_nm": 1.1014058383859295,
+        "coverage_fraction": 0.386016845703125
+      }
+    },
+    "30": {
+      "rave_nm": {
+        "min": 8.65986850349185,
+        "max": 17.3197370069837,
+        "reference": 11.546491337989135,
+        "source_field": "single_lognormal_Rave_nm"
+      },
+      "sig_l": {
+        "min": 0.3911639560172096,
+        "max": 0.6519399266953494,
+        "reference": 0.5215519413562795,
+        "source_field": "single_lognormal_sigL"
+      },
+      "afm_reference": {
+        "single_lognormal_std_nm": 6.455805980790388,
+        "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
+        "effe_proxy": 0.4464475804281316,
+        "equivalent_thickness_nm": 0.7870367597947996,
+        "coverage_fraction": 0.3874359130859375
+      }
+    },
+    "40": {
+      "rave_nm": {
+        "min": 14.85547469351884,
+        "max": 29.71094938703768,
+        "reference": 19.807299591358454,
+        "source_field": "single_lognormal_Rave_nm"
+      },
+      "sig_l": {
+        "min": 0.4998094779602946,
+        "max": 0.833015796600491,
+        "reference": 0.6664126372803928,
+        "source_field": "single_lognormal_sigL"
+      },
+      "afm_reference": {
+        "single_lognormal_std_nm": 14.810449622599117,
+        "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
+        "effe_proxy": 0.5239496547105853,
+        "equivalent_thickness_nm": 3.953024330067593,
+        "coverage_fraction": 0.4311370849609375
+      }
+    },
+    "50": {
+      "rave_nm": {
+        "min": 9.491809754816476,
+        "max": 18.983619509632952,
+        "reference": 12.655746339755302,
+        "source_field": "single_lognormal_Rave_nm"
+      },
+      "sig_l": {
+        "min": 0.5663730732257475,
+        "max": 0.9,
+        "reference": 0.75516409763433,
+        "source_field": "single_lognormal_sigL"
+      },
+      "afm_reference": {
+        "single_lognormal_std_nm": 11.09635115871309,
+        "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
+        "effe_proxy": 0.6570935840377324,
+        "equivalent_thickness_nm": 1.3860830753720383,
+        "coverage_fraction": 0.39727020263671875
+      }
+    },
+    "60": {
+      "rave_nm": {
+        "min": 9.93380461722105,
+        "max": 19.8676092344421,
+        "reference": 13.2450728229614,
+        "source_field": "single_lognormal_Rave_nm"
+      },
+      "sig_l": {
+        "min": 0.5317215661861561,
+        "max": 0.88620261031026,
+        "reference": 0.708962088248208,
+        "source_field": "single_lognormal_sigL"
+      },
+      "afm_reference": {
+        "single_lognormal_std_nm": 10.703613347549087,
+        "single_lognormal_fit_method": "moment_matched_from_pooled_radii",
+        "effe_proxy": 0.6521669022812039,
+        "equivalent_thickness_nm": 1.5542450833822625,
+        "coverage_fraction": 0.39617156982421875
+      }
+    }
+  }
+}

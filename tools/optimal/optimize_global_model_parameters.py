@@ -106,6 +106,25 @@ class ModelBounds:
 
 
 @dataclass(frozen=True)
+class AfmParameterPrior:
+    time_s: int
+    rave_min_nm: float
+    rave_max_nm: float
+    rave_reference_nm: float
+    sig_l_min: float
+    sig_l_max: float
+    sig_l_reference: float
+
+
+@dataclass(frozen=True)
+class AfmPriorConfig:
+    path: Path
+    source: dict[str, Any]
+    strategy: dict[str, Any]
+    priors_by_time_s: dict[int, AfmParameterPrior]
+
+
+@dataclass(frozen=True)
 class SpectrumFit:
     time_s: int
     experimental: Spectrum
@@ -181,6 +200,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gnuplot-dir", type=Path, default=Path("scripts/gnuplot/optimal_global"))
     parser.add_argument("--image-dir", type=Path, default=Path("img/optimal_global"))
     parser.add_argument("--tmp-dir", type=Path, default=None)
+    parser.add_argument(
+        "--afm-priors-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional AFM-derived prior bounds JSON. Supported only for "
+            "mmgm_spheres_single and mmgm_holes_single."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-generations", type=int, default=None)
     parser.add_argument("--population-size", type=int, default=None)
@@ -309,6 +337,137 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
         seed=int(differential_evolution.get("seed", 12345)),
         thickness_tail_constraint=read_thickness_tail_constraint(model),
     )
+
+
+def require_finite_number(value: Any, field_path: str, time_s: int | None = None) -> float:
+    context = f" for time_s={time_s}" if time_s is not None else ""
+    if isinstance(value, bool):
+        raise OptimizerError(f"AFM prior field {field_path}{context} must be numeric")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise OptimizerError(
+            f"AFM prior field {field_path}{context} must be numeric"
+        ) from exc
+    if not math.isfinite(parsed):
+        raise OptimizerError(f"AFM prior field {field_path}{context} must be finite")
+    return parsed
+
+
+def require_nested_mapping(
+    raw: dict[str, Any],
+    key: str,
+    field_path: str,
+    time_s: int | None = None,
+) -> dict[str, Any]:
+    context = f" for time_s={time_s}" if time_s is not None else ""
+    value = raw.get(key)
+    if not isinstance(value, dict):
+        raise OptimizerError(f"AFM prior field {field_path}{context} must be an object")
+    return value
+
+
+def read_afm_prior_config(path: Path) -> AfmPriorConfig:
+    if not path.exists():
+        raise OptimizerError(f"AFM priors JSON does not exist: {path}")
+    if not path.is_file():
+        raise OptimizerError(f"AFM priors JSON is not a file: {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OptimizerError(f"Could not parse AFM priors JSON {path}: {exc}") from exc
+
+    if raw.get("schema_version") != 1:
+        raise OptimizerError("AFM priors JSON schema_version must be 1")
+
+    source = require_nested_mapping(raw, "source", "source")
+    if source.get("model") != "mmgm_single":
+        raise OptimizerError("AFM priors source.model must be 'mmgm_single'")
+    if source.get("distribution") != "single_lognormal":
+        raise OptimizerError(
+            "AFM priors source.distribution must be 'single_lognormal'"
+        )
+
+    strategy = raw.get("strategy", {})
+    if not isinstance(strategy, dict):
+        raise OptimizerError("AFM priors field strategy must be an object")
+
+    bounds_by_time = raw.get("bounds_by_time_s")
+    if not isinstance(bounds_by_time, dict) or not bounds_by_time:
+        raise OptimizerError("AFM priors bounds_by_time_s must be a non-empty object")
+
+    priors: dict[int, AfmParameterPrior] = {}
+    for raw_time_s, entry in bounds_by_time.items():
+        try:
+            time_s = int(raw_time_s)
+        except (TypeError, ValueError) as exc:
+            raise OptimizerError(
+                f"AFM priors time key must parse to an integer: {raw_time_s!r}"
+            ) from exc
+        if str(time_s) != str(raw_time_s):
+            raise OptimizerError(
+                f"AFM priors time key must be a base-10 integer string: {raw_time_s!r}"
+            )
+        if time_s in priors:
+            raise OptimizerError(f"Duplicate AFM prior time_s: {time_s}")
+        if not isinstance(entry, dict):
+            raise OptimizerError(f"AFM prior entry for time_s={time_s} must be an object")
+
+        rave = require_nested_mapping(entry, "rave_nm", "rave_nm", time_s)
+        sig_l = require_nested_mapping(entry, "sig_l", "sig_l", time_s)
+        rave_min = require_finite_number(rave.get("min"), "rave_nm.min", time_s)
+        rave_max = require_finite_number(rave.get("max"), "rave_nm.max", time_s)
+        rave_reference = require_finite_number(
+            rave.get("reference"),
+            "rave_nm.reference",
+            time_s,
+        )
+        sig_l_min = require_finite_number(sig_l.get("min"), "sig_l.min", time_s)
+        sig_l_max = require_finite_number(sig_l.get("max"), "sig_l.max", time_s)
+        sig_l_reference = require_finite_number(
+            sig_l.get("reference"),
+            "sig_l.reference",
+            time_s,
+        )
+
+        if rave_min <= 0.0:
+            raise OptimizerError(f"AFM prior rave_nm.min must be > 0 for time_s={time_s}")
+        if rave_min >= rave_max:
+            raise OptimizerError(
+                f"AFM prior rave_nm.min must be < rave_nm.max for time_s={time_s}"
+            )
+        if sig_l_min < 0.0:
+            raise OptimizerError(f"AFM prior sig_l.min must be >= 0 for time_s={time_s}")
+        if sig_l_min >= sig_l_max:
+            raise OptimizerError(
+                f"AFM prior sig_l.min must be < sig_l.max for time_s={time_s}"
+            )
+        if sig_l_reference < 0.0:
+            raise OptimizerError(
+                f"AFM prior sig_l.reference must be >= 0 for time_s={time_s}"
+            )
+
+        priors[time_s] = AfmParameterPrior(
+            time_s=time_s,
+            rave_min_nm=rave_min,
+            rave_max_nm=rave_max,
+            rave_reference_nm=rave_reference,
+            sig_l_min=sig_l_min,
+            sig_l_max=sig_l_max,
+            sig_l_reference=sig_l_reference,
+        )
+
+    return AfmPriorConfig(
+        path=path,
+        source=dict(source),
+        strategy=dict(strategy),
+        priors_by_time_s=dict(sorted(priors.items())),
+    )
+
+
+def read_afm_priors(path: Path) -> dict[int, AfmParameterPrior]:
+    return read_afm_prior_config(path).priors_by_time_s
 
 
 def transform_value(minimum: float, maximum: float, transform: str, unit_value: float) -> float:
@@ -624,12 +783,21 @@ def mmgm_single_global_parameters_from_unit_vector(
     unit_values: Sequence[float],
     bounds: ModelBounds,
     n_spectra: int,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    spectrum_times_s: Sequence[int] | None = None,
 ) -> list[tuple[float, float, float, float]]:
     require_mmgm_single_bounds(bounds)
     if len(unit_values) != 4 * n_spectra:
         raise OptimizerError(
             f"MMGM single global parameter vector must have {4 * n_spectra} values"
         )
+    if afm_priors_by_time_s is not None:
+        if spectrum_times_s is None:
+            raise OptimizerError("AFM priors require spectrum_times_s for MMGM mapping")
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "AFM priors require one spectrum time per MMGM spectrum"
+            )
     assert bounds.rave_min_nm is not None
     assert bounds.rave_max_nm is not None
     assert bounds.sig_l_min is not None
@@ -637,6 +805,22 @@ def mmgm_single_global_parameters_from_unit_vector(
     parameters: list[tuple[float, float, float, float]] = []
     for spectrum_index in range(n_spectra):
         index = 4 * spectrum_index
+        if afm_priors_by_time_s is None:
+            rave_min_nm = bounds.rave_min_nm
+            rave_max_nm = bounds.rave_max_nm
+            sig_l_min = bounds.sig_l_min
+            sig_l_max = bounds.sig_l_max
+        else:
+            assert spectrum_times_s is not None
+            time_s = spectrum_times_s[spectrum_index]
+            try:
+                prior = afm_priors_by_time_s[time_s]
+            except KeyError as exc:
+                raise OptimizerError(f"Missing AFM prior for spectrum time_s={time_s}") from exc
+            rave_min_nm = prior.rave_min_nm
+            rave_max_nm = prior.rave_max_nm
+            sig_l_min = prior.sig_l_min
+            sig_l_max = prior.sig_l_max
         effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
         thickness_nm = transform_value(
             bounds.thickness_min_nm,
@@ -645,14 +829,14 @@ def mmgm_single_global_parameters_from_unit_vector(
             unit_values[index + 1],
         )
         rave_nm = transform_value(
-            bounds.rave_min_nm,
-            bounds.rave_max_nm,
+            rave_min_nm,
+            rave_max_nm,
             bounds.rave_transform,
             unit_values[index + 2],
         )
         sig_l = transform_value(
-            bounds.sig_l_min,
-            bounds.sig_l_max,
+            sig_l_min,
+            sig_l_max,
             bounds.sig_l_transform,
             unit_values[index + 3],
         )
@@ -712,15 +896,44 @@ def parameter_count_for_model(model_name: str) -> int:
     return 4 if model_name in {"mmgm_spheres_single", "mmgm_holes_single"} else 2
 
 
+def require_afm_prior_times(
+    *,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior],
+    spectrum_times_s: Sequence[int] | None,
+) -> None:
+    if spectrum_times_s is None:
+        raise OptimizerError("AFM priors require spectrum_times_s")
+    missing = sorted(set(spectrum_times_s) - set(afm_priors_by_time_s))
+    if missing:
+        raise OptimizerError(
+            "Missing AFM prior(s) for spectrum time_s: "
+            + ", ".join(str(time_s) for time_s in missing)
+        )
+
+
 def feasible_initial_population(
     *,
     model_name: str,
     n_spectra: int,
     bounds: ModelBounds,
     population_count: int,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    spectrum_times_s: Sequence[int] | None = None,
 ) -> list[list[float]]:
     rng = random.Random(bounds.seed)
     parameters_per_spectrum = parameter_count_for_model(model_name)
+    if afm_priors_by_time_s is not None:
+        if parameters_per_spectrum != 4:
+            raise OptimizerError("AFM priors are only supported for MMGM single models")
+        require_afm_prior_times(
+            afm_priors_by_time_s=afm_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+        assert spectrum_times_s is not None
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "AFM priors require one spectrum time per initial-population spectrum"
+            )
     population: list[list[float]] = [[0.5] * (parameters_per_spectrum * n_spectra)]
     while len(population) < population_count:
         candidate_parameters: list[tuple[float, list[float]]] = []
@@ -748,26 +961,67 @@ def feasible_initial_population(
                 assert bounds.rave_max_nm is not None
                 assert bounds.sig_l_min is not None
                 assert bounds.sig_l_max is not None
-                rave_unit = rng.random()
-                sig_l_unit = rng.random()
-                rave_nm = transform_value(
-                    bounds.rave_min_nm,
-                    bounds.rave_max_nm,
-                    bounds.rave_transform,
-                    rave_unit,
-                )
-                sig_l = transform_value(
-                    bounds.sig_l_min,
-                    bounds.sig_l_max,
-                    bounds.sig_l_transform,
-                    sig_l_unit,
-                )
-                if violates_thickness_tail_constraint(thickness_nm, rave_nm, sig_l, bounds):
-                    continue
-                unit_values.extend([rave_unit, sig_l_unit])
+                if afm_priors_by_time_s is None:
+                    rave_unit = rng.random()
+                    sig_l_unit = rng.random()
+                    rave_nm = transform_value(
+                        bounds.rave_min_nm,
+                        bounds.rave_max_nm,
+                        bounds.rave_transform,
+                        rave_unit,
+                    )
+                    sig_l = transform_value(
+                        bounds.sig_l_min,
+                        bounds.sig_l_max,
+                        bounds.sig_l_transform,
+                        sig_l_unit,
+                    )
+                    if violates_thickness_tail_constraint(thickness_nm, rave_nm, sig_l, bounds):
+                        continue
+                    unit_values.extend([rave_unit, sig_l_unit])
             candidate_parameters.append((effe * thickness_nm, unit_values))
         candidate = []
-        for _, unit_values in sorted(candidate_parameters, key=lambda item: item[0]):
+        ordered_parameters = sorted(candidate_parameters, key=lambda item: item[0])
+        for spectrum_index, (_, unit_values) in enumerate(ordered_parameters):
+            if parameters_per_spectrum == 4 and afm_priors_by_time_s is not None:
+                assert spectrum_times_s is not None
+                prior = afm_priors_by_time_s[spectrum_times_s[spectrum_index]]
+                thickness_nm = transform_value(
+                    bounds.thickness_min_nm,
+                    bounds.thickness_max_nm,
+                    bounds.thickness_transform,
+                    unit_values[1],
+                )
+                attempts = 0
+                while True:
+                    attempts += 1
+                    if attempts > 10000:
+                        raise OptimizerError(
+                            "Could not build a feasible AFM-prior MMGM initial "
+                            "population; check priors and thickness-tail constraint."
+                        )
+                    rave_unit = rng.random()
+                    sig_l_unit = rng.random()
+                    rave_nm = transform_value(
+                        prior.rave_min_nm,
+                        prior.rave_max_nm,
+                        bounds.rave_transform,
+                        rave_unit,
+                    )
+                    sig_l = transform_value(
+                        prior.sig_l_min,
+                        prior.sig_l_max,
+                        bounds.sig_l_transform,
+                        sig_l_unit,
+                    )
+                    if not violates_thickness_tail_constraint(
+                        thickness_nm,
+                        rave_nm,
+                        sig_l,
+                        bounds,
+                    ):
+                        break
+                unit_values = [*unit_values, rave_unit, sig_l_unit]
             candidate.extend(unit_values)
         population.append(candidate)
     return population
@@ -824,6 +1078,7 @@ def optimize_global(
     geometry: str,
     spectra: Sequence[TimedSpectrum],
     paths: OutputPaths,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
 ) -> GlobalFit:
     best: GlobalFit | None = None
     parameters_per_spectrum = parameter_count_for_model(model_name)
@@ -834,7 +1089,11 @@ def optimize_global(
         nonlocal best
         if parameters_per_spectrum == 4:
             parameters = mmgm_single_global_parameters_from_unit_vector(
-                unit_values, bounds, len(spectra)
+                unit_values,
+                bounds,
+                len(spectra),
+                afm_priors_by_time_s=afm_priors_by_time_s,
+                spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
             )
             if any(
                 violates_thickness_tail_constraint(
@@ -925,6 +1184,8 @@ def optimize_global(
         n_spectra=len(spectra),
         bounds=bounds,
         population_count=population_count,
+        afm_priors_by_time_s=afm_priors_by_time_s,
+        spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
     )
     differential_evolution(
         lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
@@ -1014,6 +1275,7 @@ def write_result_json(
     model: ModelLib,
     geometry: str,
     plot_window: PlotWindow,
+    afm_prior: AfmParameterPrior | None = None,
 ) -> None:
     grid_min, grid_max, grid_step, full_spectrum_points = experimental.grid
     mse = fit.sse / fit.objective_points
@@ -1063,6 +1325,19 @@ def write_result_json(
             sig_l=fit.sig_l,
             thickness_nm=fit.thickness_nm,
         )
+    if afm_prior is not None:
+        result["afm_prior_reference"] = {
+            "rave_nm": afm_prior.rave_reference_nm,
+            "sig_l": afm_prior.sig_l_reference,
+            "rave_nm_bounds": {
+                "min": afm_prior.rave_min_nm,
+                "max": afm_prior.rave_max_nm,
+            },
+            "sig_l_bounds": {
+                "min": afm_prior.sig_l_min,
+                "max": afm_prior.sig_l_max,
+            },
+        }
     if fit.invalid_points > 0:
         result["warnings"] = ["non_finite_points_present"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1077,6 +1352,7 @@ def write_global_summary_json(
     model: ModelLib,
     geometry: str,
     n_parameters: int,
+    afm_prior_config: AfmPriorConfig | None = None,
 ) -> None:
     result = {
         "model": model.MODEL_NAME,
@@ -1102,6 +1378,13 @@ def write_global_summary_json(
         },
         "spectra": [],
     }
+    if afm_prior_config is not None:
+        result["afm_priors"] = {
+            "enabled": True,
+            "path": project_relative(afm_prior_config.path),
+            "source": afm_prior_config.source,
+            "strategy": afm_prior_config.strategy,
+        }
     for fit in global_fit.spectra:
         spectrum_result = {
             "time_s": fit.time_s,
@@ -1113,6 +1396,20 @@ def write_global_summary_json(
         if fit.rave_nm is not None and fit.sig_l is not None:
             spectrum_result["rave_nm"] = fit.rave_nm
             spectrum_result["sig_l"] = fit.sig_l
+        if afm_prior_config is not None:
+            prior = afm_prior_config.priors_by_time_s[fit.time_s]
+            spectrum_result["afm_prior_reference"] = {
+                "rave_nm": prior.rave_reference_nm,
+                "sig_l": prior.sig_l_reference,
+                "rave_nm_bounds": {
+                    "min": prior.rave_min_nm,
+                    "max": prior.rave_max_nm,
+                },
+                "sig_l_bounds": {
+                    "min": prior.sig_l_min,
+                    "max": prior.sig_l_max,
+                },
+            }
         spectrum_result["h_ag_nm"] = fit.h_ag_nm
         result["spectra"].append(spectrum_result)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1126,6 +1423,15 @@ def run_gnuplot(script_path: Path) -> None:
 
 
 def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelection) -> int:
+    afm_prior_config: AfmPriorConfig | None = None
+    if args.afm_priors_json is not None:
+        if selection.model not in {"mmgm_spheres_single", "mmgm_holes_single"}:
+            raise OptimizerError(
+                "--afm-priors-json is supported only for "
+                "mmgm_spheres_single and mmgm_holes_single"
+            )
+        afm_prior_config = read_afm_prior_config(args.afm_priors_json)
+
     if not args.transmittance_exe.exists():
         raise OptimizerError(
             f"Missing forward executable: {args.transmittance_exe}. Run `make bin/transmittance`."
@@ -1163,6 +1469,11 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             )
     if not timed_spectra:
         raise OptimizerError(f"No spectra found in {args.spectra_dir}")
+    if afm_prior_config is not None:
+        require_afm_prior_times(
+            afm_priors_by_time_s=afm_prior_config.priors_by_time_s,
+            spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in timed_spectra],
+        )
 
     spectra_only = [timed_spectrum.spectrum for timed_spectrum in timed_spectra]
     plot_window = common_plot_window(spectra_only)
@@ -1191,6 +1502,15 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         f"  optimizer: {optimizer_label}",
         flush=True,
     )
+    if afm_prior_config is not None:
+        print(
+            f"  AFM priors: {afm_prior_config.path}\n"
+            "  AFM prior distribution: "
+            f"{afm_prior_config.source.get('distribution')}\n"
+            "  AFM radius proxy: "
+            f"{afm_prior_config.source.get('radius_proxy_name')}",
+            flush=True,
+        )
 
     global_fit = optimize_global(
         transmittance_exe=args.transmittance_exe,
@@ -1201,6 +1521,9 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         geometry=selection.geometry,
         spectra=timed_spectra,
         paths=paths,
+        afm_priors_by_time_s=(
+            afm_prior_config.priors_by_time_s if afm_prior_config is not None else None
+        ),
     )
 
     for fit in global_fit.spectra:
@@ -1219,6 +1542,11 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             model=selected_lib,
             geometry=selection.geometry,
             plot_window=plot_window,
+            afm_prior=(
+                afm_prior_config.priors_by_time_s[fit.time_s]
+                if afm_prior_config is not None
+                else None
+            ),
         )
         write_gnuplot_script(
             path=gnuplot_path,
@@ -1240,6 +1568,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         model=selected_lib,
         geometry=selection.geometry,
         n_parameters=n_parameters,
+        afm_prior_config=afm_prior_config,
     )
     print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")
     return 0

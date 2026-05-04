@@ -42,9 +42,7 @@ scripts/gnuplot/optimal/
 scripts/gnuplot/optimal_global/
 scripts/gnuplot/experimental/
 scripts/gnuplot/comparisons/
-scripts/gnuplot/tests/*.gp
-scripts/gnuplot/tests/mmgm_single_seed_stability/
-scripts/gnuplot/tests/mmgm_single_global_seed_stability/
+scripts/gnuplot/tests/**/*.gp
 
 # Editor / OS noise
 *~
