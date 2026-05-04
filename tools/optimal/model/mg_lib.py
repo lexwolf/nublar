@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 
-MODEL_NAME = "mg"
-DISPLAY_NAME = "MG"
+MODEL_NAME: Final = "mg"
+DISPLAY_NAME: Final = "MG"
 SUPPORTED_GEOMETRIES = {"spheres", "holes"}
 
 

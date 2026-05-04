@@ -12,7 +12,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, cast
 
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
@@ -156,8 +156,11 @@ class ModelSelection:
 
 
 class ModelLib(Protocol):
-    MODEL_NAME: str
-    DISPLAY_NAME: str
+    @property
+    def MODEL_NAME(self) -> str: ...
+
+    @property
+    def DISPLAY_NAME(self) -> str: ...
 
     def configure_effective_medium(
         self,
@@ -1112,10 +1115,12 @@ def optimize_global(
         for index, (timed_spectrum, parameter_set) in enumerate(
             zip(spectra, parameters, strict=True)
         ):
-            effe = parameter_set[0]
-            thickness_nm = parameter_set[1]
-            rave_nm = parameter_set[2] if parameters_per_spectrum == 4 else None
-            sig_l = parameter_set[3] if parameters_per_spectrum == 4 else None
+            if len(parameter_set) == 4:
+                effe, thickness_nm, rave_nm, sig_l = parameter_set
+            else:
+                effe, thickness_nm = parameter_set
+                rave_nm = None
+                sig_l = None
             trial_stem = f"{timed_spectrum.spectrum.basename}_global_trial_{index}"
             trial_json_path = tmp_trial_dir / f"{trial_stem}.json"
             trial_spectrum_path = tmp_trial_dir / f"{trial_stem}.dat"
@@ -1194,7 +1199,9 @@ def optimize_global(
         popsize=scipy_popsize,
         seed=bounds.seed,
         polish=False,
-        init=init_population,
+        # SciPy accepts an array-like initial population, but some stubs type
+        # this parameter only as a string strategy name.
+        init=cast(Any, init_population),
         updating="immediate",
         workers=1,
     )

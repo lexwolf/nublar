@@ -120,8 +120,11 @@ class ModelSelection:
 
 
 class ModelLib(Protocol):
-    MODEL_NAME: str
-    DISPLAY_NAME: str
+    @property
+    def MODEL_NAME(self) -> str: ...
+
+    @property
+    def DISPLAY_NAME(self) -> str: ...
 
     def configure_effective_medium(
         self,
