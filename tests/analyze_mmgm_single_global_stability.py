@@ -11,7 +11,6 @@ from typing import Any
 
 
 DEFAULT_ROOT = Path("data/output/tests/mmgm_single_global_seed_stability")
-TIMES_S = (10, 20, 30, 40, 50, 60)
 PARAMETERS = ("h_ag", "effe", "thickness", "rave", "sig_l")
 
 
@@ -63,18 +62,32 @@ def parse_generation_seed(path: Path) -> tuple[int, int]:
 def load_result(path: Path) -> dict[str, Any]:
     result = json.loads(path.read_text(encoding="utf-8"))
     spectra = result.get("spectra", [])
-    if len(spectra) != len(TIMES_S):
-        raise SystemExit(
-            f"Expected {len(TIMES_S)} spectra in {path}, found {len(spectra)}"
-        )
-    spectra_by_time = {int(item["time_s"]): item for item in spectra}
-    missing = [time_s for time_s in TIMES_S if time_s not in spectra_by_time]
-    if missing:
-        raise SystemExit(f"Missing time(s) {missing} in {path}")
+    if not spectra:
+        raise SystemExit(f"Missing spectra in {path}")
+    times = [int(item["time_s"]) for item in spectra]
+    if len(times) != len(set(times)):
+        raise SystemExit(f"Duplicate spectrum time_s values in {path}")
     return result
 
 
-def row_from_result(path: Path) -> dict[str, float | int]:
+def result_times(path: Path) -> tuple[int, ...]:
+    result = load_result(path)
+    return tuple(sorted(int(item["time_s"]) for item in result["spectra"]))
+
+
+def infer_times(json_files: list[Path]) -> tuple[int, ...]:
+    first_times = result_times(json_files[0])
+    for path in json_files[1:]:
+        times = result_times(path)
+        if times != first_times:
+            raise SystemExit(
+                f"Inconsistent spectrum times under campaign root: "
+                f"{json_files[0]} has {list(first_times)}, {path} has {list(times)}"
+            )
+    return first_times
+
+
+def row_from_result(path: Path, times_s: tuple[int, ...]) -> dict[str, float | int]:
     generation, seed = parse_generation_seed(path)
     result = load_result(path)
     objective = result.get("objective", {})
@@ -91,7 +104,10 @@ def row_from_result(path: Path) -> dict[str, float | int]:
         "n_parameters": int(objective.get("n_parameters", 0)),
     }
     spectra_by_time = {int(item["time_s"]): item for item in result["spectra"]}
-    for time_s in TIMES_S:
+    missing = [time_s for time_s in times_s if time_s not in spectra_by_time]
+    if missing:
+        raise SystemExit(f"Missing time(s) {missing} in {path}")
+    for time_s in times_s:
         suffix = f"{time_s}s"
         item = spectra_by_time[time_s]
         row[f"h_ag_{suffix}"] = required_float(item, "h_ag_nm", path)
@@ -102,32 +118,41 @@ def row_from_result(path: Path) -> dict[str, float | int]:
     return row
 
 
-def summary_columns() -> list[str]:
+def summary_columns(times_s: tuple[int, ...]) -> list[str]:
     columns = ["generation", "seed", "total_sse", "total_rmse", "n_parameters"]
     for prefix in PARAMETERS:
-        columns.extend(f"{prefix}_{time_s}s" for time_s in TIMES_S)
+        columns.extend(f"{prefix}_{time_s}s" for time_s in times_s)
     return columns
 
 
-def write_summary(root: Path, rows: list[dict[str, float | int]]) -> Path:
+def write_summary(
+    root: Path,
+    rows: list[dict[str, float | int]],
+    times_s: tuple[int, ...],
+) -> Path:
     path = root / "global_summary.csv"
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=summary_columns())
+        writer = csv.DictWriter(handle, fieldnames=summary_columns(times_s))
         writer.writeheader()
         writer.writerows(rows)
     return path
 
 
-def max_rel_spread(rows: list[dict[str, float | int]], prefix: str) -> float:
+def max_rel_spread(
+    rows: list[dict[str, float | int]],
+    prefix: str,
+    times_s: tuple[int, ...],
+) -> float:
     spreads = [
         rel_spread([float(row[f"{prefix}_{time_s}s"]) for row in rows])
-        for time_s in TIMES_S
+        for time_s in times_s
     ]
     return max(spreads)
 
 
 def stability_rows(
-    rows: list[dict[str, float | int]]
+    rows: list[dict[str, float | int]],
+    times_s: tuple[int, ...],
 ) -> list[dict[str, float | int]]:
     grouped: dict[int, list[dict[str, float | int]]] = defaultdict(list)
     for row in rows:
@@ -143,11 +168,11 @@ def stability_rows(
                 "total_sse_min": min(total_sse_values),
                 "total_sse_max": max(total_sse_values),
                 "total_sse_rel_spread": rel_spread(total_sse_values),
-                "h_ag_rel_spread_max": max_rel_spread(group, "h_ag"),
-                "effe_rel_spread_max": max_rel_spread(group, "effe"),
-                "thickness_rel_spread_max": max_rel_spread(group, "thickness"),
-                "rave_rel_spread_max": max_rel_spread(group, "rave"),
-                "sig_l_rel_spread_max": max_rel_spread(group, "sig_l"),
+                "h_ag_rel_spread_max": max_rel_spread(group, "h_ag", times_s),
+                "effe_rel_spread_max": max_rel_spread(group, "effe", times_s),
+                "thickness_rel_spread_max": max_rel_spread(group, "thickness", times_s),
+                "rave_rel_spread_max": max_rel_spread(group, "rave", times_s),
+                "sig_l_rel_spread_max": max_rel_spread(group, "sig_l", times_s),
             }
         )
     return output_rows
@@ -176,8 +201,8 @@ def write_stability(
     return path
 
 
-def h_ag_is_monotonic(row: dict[str, float | int]) -> bool:
-    values = [float(row[f"h_ag_{time_s}s"]) for time_s in TIMES_S]
+def h_ag_is_monotonic(row: dict[str, float | int], times_s: tuple[int, ...]) -> bool:
+    values = [float(row[f"h_ag_{time_s}s"]) for time_s in times_s]
     return all(left <= right for left, right in zip(values, values[1:]))
 
 
@@ -211,8 +236,11 @@ def classify(row: dict[str, float | int]) -> str:
 def build_report(
     summary: list[dict[str, float | int]],
     stability: list[dict[str, float | int]],
+    times_s: tuple[int, ...],
 ) -> str:
     lines: list[str] = ["=== GLOBAL MMGM SINGLE SEED STABILITY ===", ""]
+    lines.append("Times analyzed: " + ", ".join(f"{time_s}s" for time_s in times_s))
+    lines.append("")
     rows_by_generation = {int(row["generation"]): row for row in stability}
     summary_by_generation: dict[int, list[dict[str, float | int]]] = defaultdict(list)
     for row in summary:
@@ -247,7 +275,7 @@ def build_report(
     lines.append("=== hAg MONOTONICITY CHECK ===")
     monotonic_failures = []
     for row in summary:
-        ok = h_ag_is_monotonic(row)
+        ok = h_ag_is_monotonic(row, times_s)
         label = (
             f"gen {int(row['generation'])}, seed {int(row['seed'])}: "
             f"{'monotonic' if ok else 'NOT MONOTONIC'}"
@@ -289,13 +317,14 @@ def main() -> int:
     if not json_files:
         raise SystemExit(f"No global_result.json files found under {root}")
 
-    rows = [row_from_result(path) for path in json_files]
+    times_s = infer_times(json_files)
+    rows = [row_from_result(path, times_s) for path in json_files]
     rows.sort(key=lambda row: (int(row["generation"]), int(row["seed"])))
-    stability = stability_rows(rows)
+    stability = stability_rows(rows, times_s)
 
-    summary_path = write_summary(root, rows)
+    summary_path = write_summary(root, rows, times_s)
     stability_path = write_stability(root, stability)
-    report = build_report(rows, stability)
+    report = build_report(rows, stability, times_s)
     report_path = root / "global_report.txt"
     report_path.write_text(report + "\n", encoding="utf-8")
     print(report)

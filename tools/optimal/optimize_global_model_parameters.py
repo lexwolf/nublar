@@ -227,7 +227,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-generations", type=int, default=None)
     parser.add_argument("--population-size", type=int, default=None)
+    parser.add_argument(
+        "--exclude-times",
+        type=str,
+        default="",
+        help="Comma-separated deposition times in seconds to exclude, e.g. '40' or '20,40'.",
+    )
     return parser.parse_args()
+
+
+def parse_exclude_times(raw: str) -> set[int]:
+    if not raw.strip():
+        return set()
+    values: set[int] = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.add(int(item))
+        except ValueError as exc:
+            raise OptimizerError(f"Invalid excluded time: {item!r}") from exc
+    return values
 
 
 def selected_model(args: argparse.Namespace) -> ModelSelection:
@@ -1439,6 +1460,7 @@ def write_global_summary_json(
     n_parameters: int,
     afm_prior_config: AfmPriorConfig | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    excluded_times_s: Sequence[int] = (),
 ) -> None:
     result = {
         "model": model.MODEL_NAME,
@@ -1463,6 +1485,7 @@ def write_global_summary_json(
             "bounds": asdict(bounds),
         },
         "spectra": [],
+        "excluded_times_s": list(excluded_times_s),
     }
     if afm_prior_config is not None:
         result["afm_priors"] = {
@@ -1543,6 +1566,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
     if bounds.max_generations < 0:
         raise OptimizerError("--max-generations must be non-negative")
 
+    exclude_times = parse_exclude_times(args.exclude_times)
     spectra_paths = discover_spectra(args.spectra_dir)
     timed_spectra = [
         TimedSpectrum(
@@ -1561,6 +1585,14 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             )
     if not timed_spectra:
         raise OptimizerError(f"No spectra found in {args.spectra_dir}")
+    if exclude_times:
+        timed_spectra = [
+            timed_spectrum
+            for timed_spectrum in timed_spectra
+            if timed_spectrum.time_s not in exclude_times
+        ]
+    if not timed_spectra:
+        raise OptimizerError("No spectra remain after applying --exclude-times")
     if afm_prior_config is not None:
         require_afm_prior_times(
             afm_priors_by_time_s=afm_prior_config.priors_by_time_s,
@@ -1597,6 +1629,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         f"{selected_lib.DISPLAY_NAME} {selection.geometry} global fit:\n"
         f"  spectra: {len(timed_spectra)}\n"
         f"  parameters: {n_parameters}\n"
+        f"  excluded times: {', '.join(str(time_s) for time_s in sorted(exclude_times)) if exclude_times else 'none'}\n"
         "  constraint: hAg monotonic increasing\n"
         f"  optimizer: {optimizer_label}",
         flush=True,
@@ -1671,6 +1704,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         n_parameters=n_parameters,
         afm_prior_config=afm_prior_config,
         afm_priors_mode=afm_priors_mode,
+        excluded_times_s=sorted(exclude_times),
     )
     print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")
     return 0
