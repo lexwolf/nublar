@@ -19,6 +19,7 @@ DEFAULT_ESTIMATORS_DAT = Path("data/output/afm_diagnostics/afm_hag_estimators.da
 DEFAULT_ESTIMATORS_SUMMARY_JSON = Path(
     "data/output/afm_diagnostics/afm_hag_estimators_summary.json"
 )
+DEFAULT_INGREDIENTS_DAT = Path("data/output/afm_diagnostics/afm_hag_ingredients.dat")
 
 RADIUS_PROXY_NAME = "volume_equivalent_radius_nm"
 RADIUS_PROXY_COLUMNS = (
@@ -39,6 +40,16 @@ ESTIMATORS = (
     "h_ag_equiv_thickness_nm",
     "h_ag_radius_lognormal_nm",
     "h_ag_coverage_radius_nm",
+)
+
+INGREDIENT_COLUMNS = (
+    "time_s",
+    "coverage_fraction",
+    "volume_equivalent_radius_nm",
+    "single_lognormal_sigL",
+    "equivalent_thickness_nm",
+    "single_lognormal_Rave_nm",
+    "single_lognormal_std_nm",
 )
 
 
@@ -62,6 +73,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_ESTIMATORS_SUMMARY_JSON,
     )
+    parser.add_argument("--ingredients-dat", type=Path, default=DEFAULT_INGREDIENTS_DAT)
     return parser.parse_args()
 
 
@@ -290,6 +302,48 @@ def extract_estimator_points(
     return sorted(points, key=lambda point: point["time_s"])
 
 
+def extract_ingredient_points(
+    fieldnames: list[str],
+    rows: list[dict[str, str]],
+    radius_column: str | None,
+) -> tuple[list[dict[str, float]], list[str]]:
+    points: list[dict[str, float]] = []
+    warnings: list[str] = []
+    seen_times: set[float] = set()
+
+    source_fields = {
+        "coverage_fraction": "coverage_fraction",
+        "volume_equivalent_radius_nm": radius_column,
+        "single_lognormal_sigL": "single_lognormal_sigL",
+        "equivalent_thickness_nm": "equivalent_thickness_nm",
+        "single_lognormal_Rave_nm": "single_lognormal_Rave_nm",
+        "single_lognormal_std_nm": "single_lognormal_std_nm",
+    }
+
+    for output_field, source_field in source_fields.items():
+        if source_field is None or source_field not in fieldnames:
+            warnings.append(
+                f"ingredient column {output_field!r} is unavailable; writing NaN"
+            )
+
+    for row in rows:
+        time_s = finite_float(row["time_s"], "time_s")
+        if time_s in seen_times:
+            raise AfmHagProxyError(f"Duplicate time_s in input CSV: {time_s:g}")
+        seen_times.add(time_s)
+
+        point = {"time_s": time_s}
+        for output_field, source_field in source_fields.items():
+            point[output_field] = (
+                optional_finite_float(row, source_field, time_s)
+                if source_field is not None and source_field in fieldnames
+                else math.nan
+            )
+        points.append(point)
+
+    return sorted(points, key=lambda point: point["time_s"]), warnings
+
+
 def linear_fit_xy(xs: list[float], ys: list[float]) -> dict[str, float]:
     n = len(xs)
     if n < 2:
@@ -461,6 +515,20 @@ def write_estimators_summary(path: Path, points: list[dict[str, float]]) -> None
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
+def write_ingredients_dat(path: Path, points: list[dict[str, float]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("# AFM raw ingredients for hAg diagnostic sanity checks\n")
+        handle.write("# NaN means the source column or value was unavailable.\n")
+        handle.write("# Columns:\n")
+        handle.write("# " + " ".join(INGREDIENT_COLUMNS) + "\n")
+        for point in points:
+            handle.write(
+                " ".join(format_value(point[column]) for column in INGREDIENT_COLUMNS)
+                + "\n"
+            )
+
+
 def main() -> int:
     try:
         args = parse_args()
@@ -468,6 +536,9 @@ def main() -> int:
         check_required_columns(fieldnames)
         radius_column = optional_radius_proxy_column(fieldnames)
         estimator_points = extract_estimator_points(fieldnames, rows, radius_column)
+        ingredient_points, ingredient_warnings = extract_ingredient_points(
+            fieldnames, rows, radius_column
+        )
 
         if has_all(fieldnames, ("coverage_fraction", "single_lognormal_sigL")) and radius_column:
             points = extract_points(rows, radius_column)
@@ -479,9 +550,12 @@ def main() -> int:
 
         write_estimators_dat(args.estimators_dat, estimator_points)
         write_estimators_summary(args.estimators_summary_json, estimator_points)
+        write_ingredients_dat(args.ingredients_dat, ingredient_points)
 
         print(f"Input CSV: {args.input_csv}")
         print(f"Radius proxy column: {radius_column or 'unavailable'}")
+        for warning in ingredient_warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
         if fit is not None:
             print(f"Wrote radius data: {args.output_dat}")
             print(f"Wrote radius summary: {args.summary_json}")
@@ -493,6 +567,7 @@ def main() -> int:
             )
         print(f"Wrote estimator data: {args.estimators_dat}")
         print(f"Wrote estimator summary: {args.estimators_summary_json}")
+        print(f"Wrote ingredient data: {args.ingredients_dat}")
         return 0
     except AfmHagProxyError as exc:
         print(f"Error: {exc}", file=sys.stderr)
