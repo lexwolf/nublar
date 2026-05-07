@@ -1,4 +1,4 @@
-set terminal pngcairo size 1800,1100 enhanced font "Arial,12"
+set terminal pngcairo size 1800,1100 noenhanced font "Arial,12"
 system "mkdir -p img/afm_diagnostics"
 set output "img/afm_diagnostics/afm_hag_ingredients.png"
 
