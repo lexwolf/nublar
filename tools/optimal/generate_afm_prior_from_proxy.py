@@ -165,6 +165,12 @@ def build_document(
                 "reference": sig_l,
                 "source_field": "single_lognormal_sigL",
             },
+            "thickness_nm": {
+                "min": 0.5 * equivalent_thickness_nm,
+                "max": 2.0 * equivalent_thickness_nm,
+                "reference": equivalent_thickness_nm,
+                "source_field": "equivalent_thickness_nm",
+            },
             "afm_reference": {
                 "single_lognormal_std_nm": single_std_nm,
                 "single_lognormal_fit_method": row["single_lognormal_fit_method"],

@@ -26,6 +26,8 @@ LOGNORMAL_P99_Z = 2.3263478740408408
 MMGM_SINGLE_MODELS = {"mmgm_spheres_single", "mmgm_holes_single"}
 AFM_PRIOR_MODES = {"bounded", "fixed"}
 DEFAULT_AFM_PRIORS_MODE = "bounded"
+AFM_THICKNESS_PRIOR_MODES = {"none", "bounded"}
+DEFAULT_AFM_THICKNESS_PRIOR_MODE = "none"
 
 
 class OptimizerError(RuntimeError):
@@ -117,6 +119,9 @@ class AfmParameterPrior:
     sig_l_min: float
     sig_l_max: float
     sig_l_reference: float
+    thickness_min_nm: float | None = None
+    thickness_max_nm: float | None = None
+    thickness_reference_nm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +228,12 @@ def parse_args() -> argparse.Namespace:
             "How to use AFM priors: 'bounded' keeps Rave and sig_l fitted within "
             "AFM bounds; 'fixed' uses AFM reference values directly."
         ),
+    )
+    parser.add_argument(
+        "--afm-thickness-prior",
+        choices=sorted(AFM_THICKNESS_PRIOR_MODES),
+        default=DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+        help="Use AFM-derived thickness bounds when available.",
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-generations", type=int, default=None)
@@ -466,6 +477,30 @@ def read_afm_prior_config(path: Path) -> AfmPriorConfig:
             "sig_l.reference",
             time_s,
         )
+        thickness_min: float | None = None
+        thickness_max: float | None = None
+        thickness_reference: float | None = None
+        thickness = entry.get("thickness_nm")
+        if thickness is not None:
+            if not isinstance(thickness, dict):
+                raise OptimizerError(
+                    f"AFM prior field thickness_nm for time_s={time_s} must be an object"
+                )
+            thickness_min = require_finite_number(
+                thickness.get("min"),
+                "thickness_nm.min",
+                time_s,
+            )
+            thickness_max = require_finite_number(
+                thickness.get("max"),
+                "thickness_nm.max",
+                time_s,
+            )
+            thickness_reference = require_finite_number(
+                thickness.get("reference"),
+                "thickness_nm.reference",
+                time_s,
+            )
 
         if rave_min <= 0.0:
             raise OptimizerError(f"AFM prior rave_nm.min must be > 0 for time_s={time_s}")
@@ -483,6 +518,18 @@ def read_afm_prior_config(path: Path) -> AfmPriorConfig:
             raise OptimizerError(
                 f"AFM prior sig_l.reference must be >= 0 for time_s={time_s}"
             )
+        if thickness_min is not None:
+            assert thickness_max is not None
+            assert thickness_reference is not None
+            if thickness_min <= 0.0:
+                raise OptimizerError(
+                    f"AFM prior thickness_nm.min must be > 0 for time_s={time_s}"
+                )
+            if not thickness_min < thickness_reference < thickness_max:
+                raise OptimizerError(
+                    "AFM prior thickness_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
 
         priors[time_s] = AfmParameterPrior(
             time_s=time_s,
@@ -492,6 +539,9 @@ def read_afm_prior_config(path: Path) -> AfmPriorConfig:
             sig_l_min=sig_l_min,
             sig_l_max=sig_l_max,
             sig_l_reference=sig_l_reference,
+            thickness_min_nm=thickness_min,
+            thickness_max_nm=thickness_max,
+            thickness_reference_nm=thickness_reference,
         )
 
     return AfmPriorConfig(
@@ -512,6 +562,43 @@ def transform_value(minimum: float, maximum: float, transform: str, unit_value: 
             raise OptimizerError("Log-spaced bounds must be positive")
         return math.exp(math.log(minimum) + unit_value * (math.log(maximum) - math.log(minimum)))
     return minimum + unit_value * (maximum - minimum)
+
+
+def thickness_bounds_for_prior(
+    bounds: ModelBounds,
+    prior: AfmParameterPrior | None,
+    afm_thickness_prior: str,
+) -> tuple[float, float]:
+    if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
+    if (
+        afm_thickness_prior == "bounded"
+        and prior is not None
+        and prior.thickness_reference_nm is not None
+    ):
+        assert prior.thickness_min_nm is not None
+        assert prior.thickness_max_nm is not None
+        return prior.thickness_min_nm, prior.thickness_max_nm
+    return bounds.thickness_min_nm, bounds.thickness_max_nm
+
+
+def thickness_from_unit_value(
+    bounds: ModelBounds,
+    unit_value: float,
+    prior: AfmParameterPrior | None = None,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+) -> float:
+    thickness_min, thickness_max = thickness_bounds_for_prior(
+        bounds,
+        prior,
+        afm_thickness_prior,
+    )
+    return transform_value(
+        thickness_min,
+        thickness_max,
+        bounds.thickness_transform,
+        unit_value,
+    )
 
 
 def load_template(path: Path) -> dict[str, Any]:
@@ -822,9 +909,12 @@ def mmgm_single_global_parameters_from_unit_vector(
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     spectrum_times_s: Sequence[int] | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
 ) -> list[tuple[float, float, float, float]]:
     if afm_priors_mode not in AFM_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
     if afm_priors_mode == "fixed" and afm_priors_by_time_s is None:
         raise OptimizerError("AFM priors fixed mode requires AFM priors")
 
@@ -855,6 +945,7 @@ def mmgm_single_global_parameters_from_unit_vector(
     for spectrum_index in range(n_spectra):
         index = parameters_per_spectrum * spectrum_index
         if afm_priors_by_time_s is None:
+            prior = None
             assert bounds.rave_min_nm is not None
             assert bounds.rave_max_nm is not None
             assert bounds.sig_l_min is not None
@@ -881,11 +972,11 @@ def mmgm_single_global_parameters_from_unit_vector(
                 sig_l_min = prior.sig_l_min
                 sig_l_max = prior.sig_l_max
         effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
-        thickness_nm = transform_value(
-            bounds.thickness_min_nm,
-            bounds.thickness_max_nm,
-            bounds.thickness_transform,
+        thickness_nm = thickness_from_unit_value(
+            bounds,
             unit_values[index + 1],
+            prior,
+            afm_thickness_prior,
         )
         if afm_priors_mode == "fixed":
             rave_nm = rave_min_nm
@@ -994,6 +1085,7 @@ def feasible_initial_population(
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     spectrum_times_s: Sequence[int] | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
 ) -> list[list[float]]:
     rng = random.Random(bounds.seed)
     afm_priors_enabled = afm_priors_by_time_s is not None
@@ -1028,12 +1120,7 @@ def feasible_initial_population(
             effe_unit = rng.random()
             thickness_unit = rng.random()
             effe = transform_value(bounds.effe_min, bounds.effe_max, "none", effe_unit)
-            thickness_nm = transform_value(
-                bounds.thickness_min_nm,
-                bounds.thickness_max_nm,
-                bounds.thickness_transform,
-                thickness_unit,
-            )
+            thickness_nm = thickness_from_unit_value(bounds, thickness_unit)
             unit_values = [effe_unit, thickness_unit]
             if model_name in MMGM_SINGLE_MODELS and parameters_per_spectrum == 4:
                 require_mmgm_single_bounds(bounds)
@@ -1067,11 +1154,11 @@ def feasible_initial_population(
             if afm_priors_by_time_s is not None:
                 assert spectrum_times_s is not None
                 prior = afm_priors_by_time_s[spectrum_times_s[spectrum_index]]
-                thickness_nm = transform_value(
-                    bounds.thickness_min_nm,
-                    bounds.thickness_max_nm,
-                    bounds.thickness_transform,
+                thickness_nm = thickness_from_unit_value(
+                    bounds,
                     unit_values[1],
+                    prior,
+                    afm_thickness_prior,
                 )
                 if afm_priors_mode == "fixed":
                     if violates_thickness_tail_constraint(
@@ -1174,6 +1261,7 @@ def optimize_global(
     paths: OutputPaths,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
 ) -> GlobalFit:
     best: GlobalFit | None = None
     afm_priors_enabled = afm_priors_by_time_s is not None
@@ -1195,6 +1283,7 @@ def optimize_global(
                 afm_priors_by_time_s=afm_priors_by_time_s,
                 spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
                 afm_priors_mode=afm_priors_mode,
+                afm_thickness_prior=afm_thickness_prior,
             )
             if any(
                 violates_thickness_tail_constraint(
@@ -1290,6 +1379,7 @@ def optimize_global(
         afm_priors_by_time_s=afm_priors_by_time_s,
         spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
         afm_priors_mode=afm_priors_mode,
+        afm_thickness_prior=afm_thickness_prior,
     )
     differential_evolution(
         lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
@@ -1382,6 +1472,7 @@ def write_result_json(
     geometry: str,
     plot_window: PlotWindow,
     afm_prior: AfmParameterPrior | None = None,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
 ) -> None:
     grid_min, grid_max, grid_step, full_spectrum_points = experimental.grid
     mse = fit.sse / fit.objective_points
@@ -1444,6 +1535,17 @@ def write_result_json(
                 "max": afm_prior.sig_l_max,
             },
         }
+        if (
+            afm_thickness_prior == "bounded"
+            and afm_prior.thickness_reference_nm is not None
+        ):
+            result["afm_thickness_reference"] = {
+                "thickness_nm": afm_prior.thickness_reference_nm,
+                "bounds": {
+                    "min": afm_prior.thickness_min_nm,
+                    "max": afm_prior.thickness_max_nm,
+                },
+            }
     if fit.invalid_points > 0:
         result["warnings"] = ["non_finite_points_present"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1460,6 +1562,7 @@ def write_global_summary_json(
     n_parameters: int,
     afm_prior_config: AfmPriorConfig | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     excluded_times_s: Sequence[int] = (),
 ) -> None:
     result = {
@@ -1495,6 +1598,11 @@ def write_global_summary_json(
             "source": afm_prior_config.source,
             "strategy": afm_prior_config.strategy,
         }
+    if afm_prior_config is not None and afm_thickness_prior == "bounded":
+        result["afm_thickness_prior"] = {
+            "mode": "bounded",
+            "source_field": "equivalent_thickness_nm",
+        }
     for fit in global_fit.spectra:
         spectrum_result = {
             "time_s": fit.time_s,
@@ -1520,6 +1628,17 @@ def write_global_summary_json(
                     "max": prior.sig_l_max,
                 },
             }
+            if (
+                afm_thickness_prior == "bounded"
+                and prior.thickness_reference_nm is not None
+            ):
+                spectrum_result["afm_thickness_reference"] = {
+                    "thickness_nm": prior.thickness_reference_nm,
+                    "bounds": {
+                        "min": prior.thickness_min_nm,
+                        "max": prior.thickness_max_nm,
+                    },
+                }
         spectrum_result["h_ag_nm"] = fit.h_ag_nm
         result["spectra"].append(spectrum_result)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1535,8 +1654,11 @@ def run_gnuplot(script_path: Path) -> None:
 def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelection) -> int:
     afm_prior_config: AfmPriorConfig | None = None
     afm_priors_mode = str(args.afm_priors_mode)
+    afm_thickness_prior = str(args.afm_thickness_prior)
     if afm_priors_mode not in AFM_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
     if afm_priors_mode == "fixed" and args.afm_priors_json is None:
         raise OptimizerError("--afm-priors-mode fixed requires --afm-priors-json")
     if args.afm_priors_json is not None:
@@ -1638,6 +1760,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         print(
             f"  AFM priors: {afm_prior_config.path}\n"
             f"  AFM priors mode: {afm_priors_mode}\n"
+            f"  AFM thickness prior: {afm_thickness_prior}\n"
             "  AFM prior distribution: "
             f"{afm_prior_config.source.get('distribution')}\n"
             "  AFM radius proxy: "
@@ -1658,6 +1781,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             afm_prior_config.priors_by_time_s if afm_prior_config is not None else None
         ),
         afm_priors_mode=afm_priors_mode,
+        afm_thickness_prior=afm_thickness_prior,
     )
 
     for fit in global_fit.spectra:
@@ -1681,6 +1805,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
                 if afm_prior_config is not None
                 else None
             ),
+            afm_thickness_prior=afm_thickness_prior,
         )
         write_gnuplot_script(
             path=gnuplot_path,
@@ -1704,6 +1829,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         n_parameters=n_parameters,
         afm_prior_config=afm_prior_config,
         afm_priors_mode=afm_priors_mode,
+        afm_thickness_prior=afm_thickness_prior,
         excluded_times_s=sorted(exclude_times),
     )
     print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")

@@ -49,6 +49,9 @@ def priors_by_time() -> dict[int, AfmParameterPrior]:
             sig_l_min=0.2,
             sig_l_max=0.4,
             sig_l_reference=0.3,
+            thickness_min_nm=1.0,
+            thickness_max_nm=4.0,
+            thickness_reference_nm=2.0,
         ),
         20: AfmParameterPrior(
             time_s=20,
@@ -58,6 +61,9 @@ def priors_by_time() -> dict[int, AfmParameterPrior]:
             sig_l_min=0.6,
             sig_l_max=0.8,
             sig_l_reference=0.7,
+            thickness_min_nm=2.0,
+            thickness_max_nm=8.0,
+            thickness_reference_nm=4.0,
         ),
     }
 
@@ -77,6 +83,21 @@ def test_bounded_mode_parameter_mapping_uses_time_specific_prior_bounds() -> Non
     assert parameters[0][3] == pytest.approx(0.3)
     assert parameters[1][2] == pytest.approx(7.0)
     assert parameters[1][3] == pytest.approx(0.7)
+
+
+def test_bounded_thickness_prior_uses_time_specific_bounds() -> None:
+    parameters = mmgm_single_global_parameters_from_unit_vector(
+        [0.25, 0.5, 0.5, 0.5, 0.75, 0.25, 0.5, 0.5],
+        minimal_bounds(),
+        n_spectra=2,
+        afm_priors_by_time_s=priors_by_time(),
+        spectrum_times_s=[10, 20],
+        afm_priors_mode="bounded",
+        afm_thickness_prior="bounded",
+    )
+
+    assert parameters[0][1] == pytest.approx(2.5)
+    assert parameters[1][1] == pytest.approx(3.5)
 
 
 def test_fixed_mode_parameter_mapping_uses_prior_references() -> None:
@@ -152,10 +173,12 @@ def afm_prior_json() -> dict[str, object]:
             "10": {
                 "rave_nm": {"min": 2.0, "max": 4.0, "reference": 3.0},
                 "sig_l": {"min": 0.2, "max": 0.4, "reference": 0.3},
+                "thickness_nm": {"min": 1.0, "max": 4.0, "reference": 2.0},
             },
             "20": {
                 "rave_nm": {"min": 6.0, "max": 8.0, "reference": 7.0},
                 "sig_l": {"min": 0.6, "max": 0.8, "reference": 0.7},
+                "thickness_nm": {"min": 2.0, "max": 8.0, "reference": 4.0},
             },
         },
     }
@@ -173,6 +196,7 @@ def test_afm_prior_config_loading(tmp_path: Path) -> None:
 
     assert config.priors_by_time_s[10].rave_reference_nm == pytest.approx(3.0)
     assert config.priors_by_time_s[20].sig_l_reference == pytest.approx(0.7)
+    assert config.priors_by_time_s[10].thickness_reference_nm == pytest.approx(2.0)
 
 
 def test_afm_prior_config_rejects_bad_schema_version(tmp_path: Path) -> None:

@@ -35,6 +35,12 @@
         "effe_proxy": 0.45393462757604996,
         "equivalent_thickness_nm": 1.3488924562640352,
         "coverage_fraction": 0.3867645263671875
+      },
+      "thickness_nm": {
+        "min": 0.6744462281320176,
+        "max": 2.6977849125280704,
+        "reference": 1.3488924562640352,
+        "source_field": "equivalent_thickness_nm"
       }
     },
     "20": {
@@ -56,6 +62,12 @@
         "effe_proxy": 0.41626859298049435,
         "equivalent_thickness_nm": 1.1014058383859295,
         "coverage_fraction": 0.386016845703125
+      },
+      "thickness_nm": {
+        "min": 0.5507029191929648,
+        "max": 2.202811676771859,
+        "reference": 1.1014058383859295,
+        "source_field": "equivalent_thickness_nm"
       }
     },
     "30": {
@@ -77,6 +89,12 @@
         "effe_proxy": 0.4464475804281316,
         "equivalent_thickness_nm": 0.7870367597947996,
         "coverage_fraction": 0.3874359130859375
+      },
+      "thickness_nm": {
+        "min": 0.3935183798973998,
+        "max": 1.5740735195895992,
+        "reference": 0.7870367597947996,
+        "source_field": "equivalent_thickness_nm"
       }
     },
     "40": {
@@ -98,6 +116,12 @@
         "effe_proxy": 0.5239496547105853,
         "equivalent_thickness_nm": 3.953024330067593,
         "coverage_fraction": 0.4311370849609375
+      },
+      "thickness_nm": {
+        "min": 1.9765121650337965,
+        "max": 7.906048660135186,
+        "reference": 3.953024330067593,
+        "source_field": "equivalent_thickness_nm"
       }
     },
     "50": {
@@ -119,6 +143,12 @@
         "effe_proxy": 0.6570935840377324,
         "equivalent_thickness_nm": 1.3860830753720383,
         "coverage_fraction": 0.39727020263671875
+      },
+      "thickness_nm": {
+        "min": 0.6930415376860192,
+        "max": 2.7721661507440767,
+        "reference": 1.3860830753720383,
+        "source_field": "equivalent_thickness_nm"
       }
     },
     "60": {
@@ -140,6 +170,12 @@
         "effe_proxy": 0.6521669022812039,
         "equivalent_thickness_nm": 1.5542450833822625,
         "coverage_fraction": 0.39617156982421875
+      },
+      "thickness_nm": {
+        "min": 0.7771225416911313,
+        "max": 3.108490166764525,
+        "reference": 1.5542450833822625,
+        "source_field": "equivalent_thickness_nm"
       }
     }
   }
