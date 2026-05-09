@@ -23,16 +23,6 @@ timestamp() {
   date --iso-8601=seconds
 }
 
-on_error() {
-  exit_code=$?
-  if [ -n "${CURRENT_STATUS_PREFIX:-}" ]; then
-    echo "${CURRENT_STATUS_PREFIX} status:failed exit_code:${exit_code} timestamp:$(timestamp)" >> "$STATUS_FILE"
-  fi
-  exit "$exit_code"
-}
-
-trap on_error ERR
-
 mkdir -p "$BASE_DATA_ROOT" "$BASE_IMG_ROOT" "$BASE_GP_ROOT"
 echo "=== bounded proxy exclude40 campaign started: $(timestamp) ===" >> "$STATUS_FILE"
 
@@ -75,6 +65,7 @@ for AFM_PRIORS in "${AFM_PRIOR_FILES[@]}"; do
       CURRENT_STATUS_PREFIX="proxy:${proxy_index}/${proxy_total} proxy_name:${prior_name} seed:${seed} generation:${generation} run:${run_index}/${run_total} excluded_times:${EXCLUDE_TIMES}"
       echo "${CURRENT_STATUS_PREFIX} status:started timestamp:$(timestamp)" >> "$STATUS_FILE"
       echo "==> Bounded-AFM exclude-40 proxy campaign: prior=${prior_name}, generation=${generation}, seed=${seed}"
+      set +e
       python3 tools/optimal/optimize_global_model_parameters.py \
         "$MODEL_FLAG" \
         --afm-priors-json "$AFM_PRIORS" \
@@ -86,10 +77,23 @@ for AFM_PRIORS in "${AFM_PRIOR_FILES[@]}"; do
         --output-dir "$OUT_DIR" \
         --image-dir "$IMG_DIR" \
         --gnuplot-dir "$GP_DIR"
+      exit_code=$?
+      set -e
+      if [ "$exit_code" -ne 0 ]; then
+        echo "${CURRENT_STATUS_PREFIX} status:failed exit_code:${exit_code} timestamp:$(timestamp)" >> "$STATUS_FILE"
+        CURRENT_STATUS_PREFIX=""
+        continue
+      fi
       echo "${CURRENT_STATUS_PREFIX} status:done timestamp:$(timestamp)" >> "$STATUS_FILE"
       CURRENT_STATUS_PREFIX=""
     done
   done
+
+  n_results=$(find "$DATA_ROOT" -name global_result.json | wc -l)
+  if [ "$n_results" -eq 0 ]; then
+    echo "proxy:${proxy_index}/${proxy_total} proxy_name:${prior_name} status:analyzer_skipped reason:no_successful_runs timestamp:$(timestamp)" >> "$STATUS_FILE"
+    continue
+  fi
 
   CURRENT_STATUS_PREFIX="proxy:${proxy_index}/${proxy_total} proxy_name:${prior_name}"
   echo "${CURRENT_STATUS_PREFIX} status:analyzer_started timestamp:$(timestamp)" >> "$STATUS_FILE"
@@ -98,11 +102,10 @@ for AFM_PRIORS in "${AFM_PRIOR_FILES[@]}"; do
   CURRENT_STATUS_PREFIX=""
 done
 
-python3 - "$BASE_DATA_ROOT" "$POPULATION_SIZE" <<'PY'
+python3 - "$BASE_DATA_ROOT" "$POPULATION_SIZE" "$AFM_PRIOR_DIR" <<'PY'
 from __future__ import annotations
 
 import csv
-import json
 import math
 import sys
 from pathlib import Path
@@ -136,60 +139,44 @@ def latest_stability_row(csv_file: Path) -> dict[str, str]:
     return max(rows, key=lambda row: int(row["generation"]))
 
 
-def result_metadata(data_root: Path) -> tuple[str, str, str]:
-    result_files = sorted(data_root.glob("gen_*/seed_*/mmgm_single/spheres/global_result.json"))
-    if not result_files:
-        raise SystemExit(f"Missing optimizer results under {data_root}")
-    raw = json.loads(result_files[0].read_text(encoding="utf-8"))
-    excluded_times = raw.get("excluded_times_s")
-    if excluded_times != [40]:
-        raise SystemExit(f"Expected excluded_times_s=[40] in {result_files[0]}, found {excluded_times!r}")
-    afm_priors = raw.get("afm_priors")
-    if not isinstance(afm_priors, dict):
-        raise SystemExit(f"Missing afm_priors metadata in {result_files[0]}")
-    source = afm_priors.get("source")
-    strategy = afm_priors.get("strategy")
-    if not isinstance(source, dict) or not isinstance(strategy, dict):
-        raise SystemExit(f"Missing AFM source/strategy metadata in {result_files[0]}")
-    radius_proxy_name = source.get("radius_proxy_name")
-    strategy_name = strategy.get("name")
-    mode = afm_priors.get("mode")
-    if not all(isinstance(value, str) and value for value in (radius_proxy_name, strategy_name, mode)):
-        raise SystemExit(f"Invalid AFM metadata in {result_files[0]}")
-    if mode != "bounded":
-        raise SystemExit(f"Expected bounded AFM mode in {result_files[0]}, found {mode!r}")
-    return radius_proxy_name, strategy_name, mode
-
-
 base_data_root = Path(sys.argv[1])
 population_size = sys.argv[2]
+afm_prior_dir = Path(sys.argv[3])
 comparison_csv = base_data_root / "proxy_comparison.csv"
 comparison_report = base_data_root / "proxy_comparison_report.txt"
 
-candidate_roots: dict[str, Path] = {}
-for data_root in sorted(path for path in base_data_root.iterdir() if path.is_dir()):
-    stability_file = data_root / "global_stability_by_generation.csv"
-    report_file = data_root / "global_report.txt"
-    if not stability_file.exists() or not report_file.exists():
-        continue
-    radius_proxy_name, strategy_name, mode = result_metadata(data_root)
-    proxy_aware_name = (
-        f"{radius_proxy_name}__{strategy_name}__{mode}_exclude40_pop_{population_size}"
-    )
-    current = candidate_roots.get(proxy_aware_name)
-    if current is None or data_root.name == proxy_aware_name:
-        candidate_roots[proxy_aware_name] = data_root
+prior_files = sorted(afm_prior_dir.glob("mmgm_single_*.json"))
+if not prior_files:
+    raise SystemExit(f"No AFM prior files found matching {afm_prior_dir / 'mmgm_single_*.json'}")
 
 rows: list[dict[str, str]] = []
-for prior_name, data_root in sorted(candidate_roots.items()):
-    if not data_root.is_dir():
-        continue
+report_sections: list[str] = []
+for prior_file in prior_files:
+    prior_name = prior_file.stem
+    data_root = base_data_root / f"{prior_name}_bounded_exclude40_pop_{population_size}"
     stability_file = data_root / "global_stability_by_generation.csv"
     report_file = data_root / "global_report.txt"
-    if not stability_file.exists():
-        raise SystemExit(f"Missing stability CSV: {stability_file}")
-    if not report_file.exists():
-        raise SystemExit(f"Missing stability report: {report_file}")
+    if not report_file.exists() or not stability_file.exists():
+        row = {
+            "prior_name": prior_name,
+            "latest_generation": "NA",
+            "best_total_sse": "NA",
+            "total_sse_rel_spread": "NA",
+            "max_hag_rel_spread": "NA",
+            "max_thickness_rel_spread": "NA",
+            "diagnosis": "FAILED",
+            "report_file": "NA",
+        }
+        rows.append(row)
+        report_sections.extend(
+            [
+                f"Prior: {prior_name}",
+                "  diagnosis: FAILED",
+                "  reason: no successful optimizer runs",
+                "",
+            ]
+        )
+        continue
 
     stability = latest_stability_row(stability_file)
     row = {
@@ -203,9 +190,19 @@ for prior_name, data_root in sorted(candidate_roots.items()):
         "report_file": report_file.as_posix(),
     }
     rows.append(row)
-
-if not rows:
-    raise SystemExit(f"No proxy result directories found under {base_data_root}")
+    report_sections.extend(
+        [
+            f"Prior: {row['prior_name']}",
+            f"  latest generation: {row['latest_generation']}",
+            f"  best total SSE: {row['best_total_sse']}",
+            f"  total SSE relative spread: {row['total_sse_rel_spread']}",
+            f"  max hAg relative spread: {row['max_hag_rel_spread']}",
+            f"  max thickness relative spread: {row['max_thickness_rel_spread']}",
+            f"  diagnosis: {row['diagnosis']}",
+            f"  report: {row['report_file']}",
+            "",
+        ]
+    )
 
 columns = [
     "prior_name",
@@ -222,21 +219,7 @@ with comparison_csv.open("w", newline="", encoding="utf-8") as handle:
     writer.writeheader()
     writer.writerows(rows)
 
-lines = ["=== BOUNDED-AFM PRIOR PROXY COMPARISON EXCLUDING 40s ===", ""]
-for row in rows:
-    lines.extend(
-        [
-            f"Prior: {row['prior_name']}",
-            f"  latest generation: {row['latest_generation']}",
-            f"  best total SSE: {row['best_total_sse']}",
-            f"  total SSE relative spread: {row['total_sse_rel_spread']}",
-            f"  max hAg relative spread: {row['max_hag_rel_spread']}",
-            f"  max thickness relative spread: {row['max_thickness_rel_spread']}",
-            f"  diagnosis: {row['diagnosis']}",
-            f"  report: {row['report_file']}",
-            "",
-        ]
-    )
+lines = ["=== BOUNDED-AFM PRIOR PROXY COMPARISON EXCLUDING 40s ===", "", *report_sections]
 comparison_report.write_text("\n".join(lines), encoding="utf-8")
 
 print(f"Wrote {comparison_csv}")
