@@ -100,6 +100,41 @@ def test_bounded_thickness_prior_uses_time_specific_bounds() -> None:
     assert parameters[1][1] == pytest.approx(3.5)
 
 
+def test_bounded_mode_can_fix_sigl_to_prior_reference() -> None:
+    parameters = mmgm_single_global_parameters_from_unit_vector(
+        [0.25, 0.5, 0.5, 0.75, 0.25, 0.5],
+        minimal_bounds(),
+        n_spectra=2,
+        afm_priors_by_time_s=priors_by_time(),
+        spectrum_times_s=[10, 20],
+        afm_priors_mode="bounded",
+        afm_sigl_mode="fixed",
+    )
+
+    assert len(parameters) == 2
+    assert parameters[0][2] == pytest.approx(3.0)
+    assert parameters[0][3] == pytest.approx(0.3)
+    assert parameters[1][2] == pytest.approx(7.0)
+    assert parameters[1][3] == pytest.approx(0.7)
+
+
+def test_bounded_thickness_prior_scale_overrides_json_bounds() -> None:
+    parameters = mmgm_single_global_parameters_from_unit_vector(
+        [0.25, 0.5, 0.5, 0.5, 0.75, 0.25, 0.5, 0.5],
+        minimal_bounds(),
+        n_spectra=2,
+        afm_priors_by_time_s=priors_by_time(),
+        spectrum_times_s=[10, 20],
+        afm_priors_mode="bounded",
+        afm_thickness_prior="bounded",
+        afm_thickness_scale_low=0.25,
+        afm_thickness_scale_high=4.0,
+    )
+
+    assert parameters[0][1] == pytest.approx(4.25)
+    assert parameters[1][1] == pytest.approx(4.75)
+
+
 def test_fixed_mode_parameter_mapping_uses_prior_references() -> None:
     parameters = mmgm_single_global_parameters_from_unit_vector(
         [0.25, 0.5, 0.75, 0.25],
@@ -148,6 +183,15 @@ def test_parameter_count_depends_on_afm_prior_mode() -> None:
             afm_priors_mode="bounded",
         )
         == 4
+    )
+    assert (
+        parameter_count_for_model(
+            "mmgm_spheres_single",
+            afm_priors_enabled=True,
+            afm_priors_mode="bounded",
+            afm_sigl_mode="fixed",
+        )
+        == 3
     )
     assert (
         parameter_count_for_model(
