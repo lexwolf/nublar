@@ -32,7 +32,9 @@ DASHTYPES = [1, 2, 3, 4, 5, 6, 7, 8]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate MMGM parameter trajectory gnuplot scripts.")
-    parser.add_argument("--data-dir", type=Path, required=True, help="Directory containing trajectory_manifest.json.")
+    parser.add_argument("--data-dir", type=Path, default=None, help="Directory containing trajectory_manifest.json.")
+    parser.add_argument("--root", type=Path, default=None, help="Campaign root. Used with --output-dir for compatibility.")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Directory containing trajectory_manifest.json.")
     parser.add_argument(
         "--gnuplot-dir",
         type=Path,
@@ -238,7 +240,10 @@ def write_strategy_script(
 
 def main() -> int:
     args = parse_args()
-    manifest = load_manifest(args.data_dir)
+    data_dir = args.data_dir or args.output_dir
+    if data_dir is None:
+        raise SystemExit("Provide --data-dir or --output-dir")
+    manifest = load_manifest(data_dir)
     args.gnuplot_dir.mkdir(parents=True, exist_ok=True)
     args.image_dir.mkdir(parents=True, exist_ok=True)
 

@@ -32,6 +32,10 @@ AFM_THICKNESS_PRIOR_MODES = {"none", "bounded"}
 DEFAULT_AFM_THICKNESS_PRIOR_MODE = "none"
 DEFAULT_AFM_THICKNESS_SCALE_LOW = 0.5
 DEFAULT_AFM_THICKNESS_SCALE_HIGH = 2.0
+HAG_LINEARITY_MODES = {"none", "soft", "hard"}
+DEFAULT_HAG_LINEARITY_MODE = "none"
+DEFAULT_HAG_LINEARITY_WEIGHT = 1.0
+DEFAULT_HAG_LINEARITY_TOLERANCE = 0.15
 
 
 class OptimizerError(RuntimeError):
@@ -152,9 +156,20 @@ class SpectrumFit:
 
 
 @dataclass(frozen=True)
+class HagLinearFit:
+    slope: float
+    intercept: float
+    r2: float
+    max_relative_deviation: float
+    penalty: float
+
+
+@dataclass(frozen=True)
 class GlobalFit:
     total_sse: float
     spectra: list[SpectrumFit]
+    objective_value: float
+    hag_linear_fit: HagLinearFit | None = None
 
     @property
     def total_finite_points(self) -> int:
@@ -268,6 +283,24 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Comma-separated deposition times in seconds to exclude, e.g. '40' or '20,40'.",
+    )
+    parser.add_argument(
+        "--hag-linearity-mode",
+        choices=sorted(HAG_LINEARITY_MODES),
+        default=DEFAULT_HAG_LINEARITY_MODE,
+        help="Regularize hAg(t)=effe(t)*thickness_nm(t) against a fitted linear trend.",
+    )
+    parser.add_argument(
+        "--hag-linearity-weight",
+        type=float,
+        default=DEFAULT_HAG_LINEARITY_WEIGHT,
+        help="Dimensionless weight for soft hAg linearity regularization.",
+    )
+    parser.add_argument(
+        "--hag-linearity-tolerance",
+        type=float,
+        default=DEFAULT_HAG_LINEARITY_TOLERANCE,
+        help="Relative hAg deviation tolerance for hard linearity mode.",
     )
     return parser.parse_args()
 
@@ -1056,6 +1089,50 @@ def violates_monotonic_h_ag(parameters: Sequence[Sequence[float]]) -> bool:
     return any(left > right for left, right in zip(values, values[1:], strict=False))
 
 
+def fit_hag_linearity(times_s: Sequence[int], h_ag_nm: Sequence[float]) -> HagLinearFit:
+    if len(times_s) != len(h_ag_nm):
+        raise OptimizerError("hAg linearity fit requires matching time and hAg lengths")
+    if len(times_s) < 2:
+        return HagLinearFit(
+            slope=0.0,
+            intercept=float(h_ag_nm[0]) if h_ag_nm else 0.0,
+            r2=1.0,
+            max_relative_deviation=0.0,
+            penalty=0.0,
+        )
+    times = [float(value) for value in times_s]
+    values = [float(value) for value in h_ag_nm]
+    mean_time = sum(times) / len(times)
+    mean_value = sum(values) / len(values)
+    centered_time = [value - mean_time for value in times]
+    centered_value = [value - mean_value for value in values]
+    denominator = sum(value * value for value in centered_time)
+    slope = (
+        sum(left * right for left, right in zip(centered_time, centered_value, strict=True))
+        / denominator
+        if denominator > 0.0
+        else 0.0
+    )
+    intercept = mean_value - slope * mean_time
+    fitted = [slope * time_s + intercept for time_s in times]
+    residuals = [actual - predicted for actual, predicted in zip(values, fitted, strict=True)]
+    total_ss = sum((actual - mean_value) ** 2 for actual in values)
+    residual_ss = sum(residual * residual for residual in residuals)
+    r2 = 1.0 if total_ss <= 0.0 else 1.0 - residual_ss / total_ss
+    relative_deviations = [
+        abs(actual - predicted) / max(abs(predicted), 1.0e-12)
+        for actual, predicted in zip(values, fitted, strict=True)
+    ]
+    penalty = sum(value * value for value in relative_deviations) / len(relative_deviations)
+    return HagLinearFit(
+        slope=slope,
+        intercept=intercept,
+        r2=r2,
+        max_relative_deviation=max(relative_deviations),
+        penalty=penalty,
+    )
+
+
 def lognormal_radius_descriptors(
     *, rave_nm: float, sig_l: float, thickness_nm: float
 ) -> dict[str, float]:
@@ -1331,6 +1408,9 @@ def optimize_global(
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
+    hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
+    hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
 ) -> GlobalFit:
     best: GlobalFit | None = None
     afm_priors_enabled = afm_priors_by_time_s is not None
@@ -1368,6 +1448,17 @@ def optimize_global(
         else:
             parameters = parameters_from_unit_vector(unit_values, bounds)
         if violates_monotonic_h_ag(parameters):
+            return VERY_LARGE_SSE
+        hag_linear_fit = fit_hag_linearity(
+            [timed_spectrum.time_s for timed_spectrum in spectra],
+            h_ag_values(parameters),
+        )
+        if hag_linear_fit.slope < -1.0e-12:
+            return VERY_LARGE_SSE
+        if (
+            hag_linearity_mode == "hard"
+            and hag_linear_fit.max_relative_deviation > hag_linearity_tolerance
+        ):
             return VERY_LARGE_SSE
 
         fits: list[SpectrumFit] = []
@@ -1416,8 +1507,17 @@ def optimize_global(
                 )
             )
 
-        if best is None or total_sse < best.total_sse:
-            best = GlobalFit(total_sse=total_sse, spectra=fits)
+        objective_value = total_sse
+        if hag_linearity_mode == "soft":
+            objective_value += hag_linearity_weight * hag_linear_fit.penalty
+
+        if best is None or objective_value < best.objective_value:
+            best = GlobalFit(
+                total_sse=total_sse,
+                spectra=fits,
+                objective_value=objective_value,
+                hag_linear_fit=hag_linear_fit,
+            )
             for index, (fit, timed_spectrum) in enumerate(zip(fits, spectra, strict=True)):
                 trial_spectrum_path = (
                     tmp_trial_dir
@@ -1428,6 +1528,7 @@ def optimize_global(
             print(
                 "new global best:\n"
                 f"  total_SSE={total_sse:.8g}\n"
+                f"  objective={objective_value:.8g}\n"
                 "  hAg=["
                 + ", ".join(f"{fit.h_ag_nm:.6g}" for fit in fits)
                 + "]",
@@ -1646,6 +1747,9 @@ def write_global_summary_json(
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
+    hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
+    hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
     excluded_times_s: Sequence[int] = (),
 ) -> None:
     result = {
@@ -1659,6 +1763,7 @@ def write_global_summary_json(
         },
         "objective": {
             "total_sse": global_fit.total_sse,
+            "regularized_objective": global_fit.objective_value,
             "total_finite_points": global_fit.total_finite_points,
             "n_parameters": n_parameters,
         },
@@ -1672,7 +1777,18 @@ def write_global_summary_json(
         },
         "spectra": [],
         "excluded_times_s": list(excluded_times_s),
+        "hag_linearity_mode": hag_linearity_mode,
+        "hag_linearity_weight": hag_linearity_weight,
+        "hag_linearity_tolerance": hag_linearity_tolerance,
     }
+    if global_fit.hag_linear_fit is not None:
+        result["hag_linear_fit"] = {
+            "slope": global_fit.hag_linear_fit.slope,
+            "intercept": global_fit.hag_linear_fit.intercept,
+            "r2": global_fit.hag_linear_fit.r2,
+            "max_relative_deviation": global_fit.hag_linear_fit.max_relative_deviation,
+            "penalty": global_fit.hag_linear_fit.penalty,
+        }
     if afm_prior_config is not None:
         result["afm_priors"] = {
             "enabled": True,
@@ -1747,6 +1863,9 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
     afm_thickness_prior = str(args.afm_thickness_prior)
     afm_thickness_scale_low = float(args.afm_thickness_scale_low)
     afm_thickness_scale_high = float(args.afm_thickness_scale_high)
+    hag_linearity_mode = str(args.hag_linearity_mode)
+    hag_linearity_weight = float(args.hag_linearity_weight)
+    hag_linearity_tolerance = float(args.hag_linearity_tolerance)
     if afm_priors_mode not in AFM_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
     if afm_sigl_mode not in AFM_SIGL_MODES:
@@ -1757,6 +1876,12 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         raise OptimizerError("--afm-thickness-scale-low must be positive")
     if afm_thickness_scale_high <= afm_thickness_scale_low:
         raise OptimizerError("--afm-thickness-scale-high must be greater than --afm-thickness-scale-low")
+    if hag_linearity_mode not in HAG_LINEARITY_MODES:
+        raise OptimizerError(f"Invalid hAg linearity mode: {hag_linearity_mode}")
+    if hag_linearity_weight < 0.0:
+        raise OptimizerError("--hag-linearity-weight must be non-negative")
+    if hag_linearity_tolerance <= 0.0:
+        raise OptimizerError("--hag-linearity-tolerance must be positive")
     if afm_priors_mode == "fixed" and args.afm_priors_json is None:
         raise OptimizerError("--afm-priors-mode fixed requires --afm-priors-json")
     if afm_priors_mode == "bounded" and afm_sigl_mode == "fixed" and args.afm_priors_json is None:
@@ -1854,6 +1979,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         f"  parameters: {n_parameters}\n"
         f"  excluded times: {', '.join(str(time_s) for time_s in sorted(exclude_times)) if exclude_times else 'none'}\n"
         "  constraint: hAg monotonic increasing\n"
+        f"  hAg linearity mode: {hag_linearity_mode}\n"
         f"  optimizer: {optimizer_label}",
         flush=True,
     )
@@ -1888,6 +2014,9 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         afm_thickness_prior=afm_thickness_prior,
         afm_thickness_scale_low=afm_thickness_scale_low,
         afm_thickness_scale_high=afm_thickness_scale_high,
+        hag_linearity_mode=hag_linearity_mode,
+        hag_linearity_weight=hag_linearity_weight,
+        hag_linearity_tolerance=hag_linearity_tolerance,
     )
 
     for fit in global_fit.spectra:
@@ -1941,6 +2070,9 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         afm_thickness_prior=afm_thickness_prior,
         afm_thickness_scale_low=afm_thickness_scale_low,
         afm_thickness_scale_high=afm_thickness_scale_high,
+        hag_linearity_mode=hag_linearity_mode,
+        hag_linearity_weight=hag_linearity_weight,
+        hag_linearity_tolerance=hag_linearity_tolerance,
         excluded_times_s=sorted(exclude_times),
     )
     print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")
