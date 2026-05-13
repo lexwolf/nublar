@@ -32,6 +32,8 @@ AFM_THICKNESS_PRIOR_MODES = {"none", "bounded"}
 DEFAULT_AFM_THICKNESS_PRIOR_MODE = "none"
 DEFAULT_AFM_THICKNESS_SCALE_LOW = 0.5
 DEFAULT_AFM_THICKNESS_SCALE_HIGH = 2.0
+THESIS_PRIOR_MODES = {"bounded", "fixed"}
+DEFAULT_THESIS_PRIORS_MODE = "bounded"
 HAG_LINEARITY_MODES = {"none", "soft", "hard"}
 DEFAULT_HAG_LINEARITY_MODE = "none"
 DEFAULT_HAG_LINEARITY_WEIGHT = 1.0
@@ -134,6 +136,14 @@ class AfmParameterPrior:
 
 @dataclass(frozen=True)
 class AfmPriorConfig:
+    path: Path
+    source: dict[str, Any]
+    strategy: dict[str, Any]
+    priors_by_time_s: dict[int, AfmParameterPrior]
+
+
+@dataclass(frozen=True)
+class ThesisPriorConfig:
     path: Path
     source: dict[str, Any]
     strategy: dict[str, Any]
@@ -274,6 +284,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_AFM_THICKNESS_SCALE_HIGH,
         help="Upper multiplier for AFM thickness reference when thickness prior is bounded.",
+    )
+    parser.add_argument(
+        "--thesis-priors-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional thesis-derived Rave/sigL/thickness prior bounds JSON. "
+            "Supported only for mmgm_spheres_single and mmgm_holes_single."
+        ),
+    )
+    parser.add_argument(
+        "--thesis-priors-mode",
+        choices=sorted(THESIS_PRIOR_MODES),
+        default=DEFAULT_THESIS_PRIORS_MODE,
+        help=(
+            "How to use thesis priors: 'bounded' fits Rave, sig_l, and thickness "
+            "within thesis bounds; 'fixed' uses all thesis morphology values directly."
+        ),
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max-generations", type=int, default=None)
@@ -614,6 +642,146 @@ def read_afm_priors(path: Path) -> dict[int, AfmParameterPrior]:
     return read_afm_prior_config(path).priors_by_time_s
 
 
+def read_thesis_prior_config(path: Path) -> ThesisPriorConfig:
+    if not path.exists():
+        raise OptimizerError(f"Thesis priors JSON does not exist: {path}")
+    if not path.is_file():
+        raise OptimizerError(f"Thesis priors JSON is not a file: {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OptimizerError(f"Could not parse thesis priors JSON {path}: {exc}") from exc
+
+    if raw.get("schema_version") != 1:
+        raise OptimizerError("Thesis priors JSON schema_version must be 1")
+
+    source = require_nested_mapping(raw, "source", "source")
+    if source.get("model") != "mmgm_single":
+        raise OptimizerError("Thesis priors source.model must be 'mmgm_single'")
+    if source.get("distribution") != "single_lognormal":
+        raise OptimizerError(
+            "Thesis priors source.distribution must be 'single_lognormal'"
+        )
+
+    strategy = raw.get("strategy", {})
+    if not isinstance(strategy, dict):
+        raise OptimizerError("Thesis priors field strategy must be an object")
+    strategy_name = strategy.get("name")
+    if not isinstance(strategy_name, str) or not strategy_name:
+        raise OptimizerError("Thesis priors strategy.name must be a non-empty string")
+    is_fixed_strategy = strategy_name == "fixed"
+
+    bounds_by_time = raw.get("bounds_by_time_s")
+    if not isinstance(bounds_by_time, dict) or not bounds_by_time:
+        raise OptimizerError("Thesis priors bounds_by_time_s must be a non-empty object")
+
+    priors: dict[int, AfmParameterPrior] = {}
+    for raw_time_s, entry in bounds_by_time.items():
+        try:
+            time_s = int(raw_time_s)
+        except (TypeError, ValueError) as exc:
+            raise OptimizerError(
+                f"Thesis priors time key must parse to an integer: {raw_time_s!r}"
+            ) from exc
+        if str(time_s) != str(raw_time_s):
+            raise OptimizerError(
+                f"Thesis priors time key must be a base-10 integer string: {raw_time_s!r}"
+            )
+        if time_s in priors:
+            raise OptimizerError(f"Duplicate thesis prior time_s: {time_s}")
+        if not isinstance(entry, dict):
+            raise OptimizerError(f"Thesis prior entry for time_s={time_s} must be an object")
+
+        rave = require_nested_mapping(entry, "rave_nm", "rave_nm", time_s)
+        sig_l = require_nested_mapping(entry, "sig_l", "sig_l", time_s)
+        thickness = require_nested_mapping(entry, "thickness_nm", "thickness_nm", time_s)
+        rave_min = require_finite_number(rave.get("min"), "rave_nm.min", time_s)
+        rave_max = require_finite_number(rave.get("max"), "rave_nm.max", time_s)
+        rave_reference = require_finite_number(
+            rave.get("reference"),
+            "rave_nm.reference",
+            time_s,
+        )
+        sig_l_min = require_finite_number(sig_l.get("min"), "sig_l.min", time_s)
+        sig_l_max = require_finite_number(sig_l.get("max"), "sig_l.max", time_s)
+        sig_l_reference = require_finite_number(
+            sig_l.get("reference"),
+            "sig_l.reference",
+            time_s,
+        )
+        thickness_min = require_finite_number(
+            thickness.get("min"),
+            "thickness_nm.min",
+            time_s,
+        )
+        thickness_max = require_finite_number(
+            thickness.get("max"),
+            "thickness_nm.max",
+            time_s,
+        )
+        thickness_reference = require_finite_number(
+            thickness.get("reference"),
+            "thickness_nm.reference",
+            time_s,
+        )
+
+        if rave_min <= 0.0:
+            raise OptimizerError(f"Thesis prior rave_nm.min must be > 0 for time_s={time_s}")
+        if sig_l_min < 0.0:
+            raise OptimizerError(f"Thesis prior sig_l.min must be >= 0 for time_s={time_s}")
+        if thickness_min <= 0.0:
+            raise OptimizerError(
+                f"Thesis prior thickness_nm.min must be > 0 for time_s={time_s}"
+            )
+        if is_fixed_strategy:
+            if not (
+                rave_min == rave_max == rave_reference
+                and sig_l_min == sig_l_max == sig_l_reference
+                and thickness_min == thickness_max == thickness_reference
+            ):
+                raise OptimizerError(
+                    "Fixed thesis priors must have min=max=reference for "
+                    f"time_s={time_s}"
+                )
+        else:
+            if not rave_min < rave_reference < rave_max:
+                raise OptimizerError(
+                    "Thesis prior rave_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+            if not sig_l_min < sig_l_reference < sig_l_max:
+                raise OptimizerError(
+                    "Thesis prior sig_l bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+            if not thickness_min < thickness_reference < thickness_max:
+                raise OptimizerError(
+                    "Thesis prior thickness_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+
+        priors[time_s] = AfmParameterPrior(
+            time_s=time_s,
+            rave_min_nm=rave_min,
+            rave_max_nm=rave_max,
+            rave_reference_nm=rave_reference,
+            sig_l_min=sig_l_min,
+            sig_l_max=sig_l_max,
+            sig_l_reference=sig_l_reference,
+            thickness_min_nm=thickness_min,
+            thickness_max_nm=thickness_max,
+            thickness_reference_nm=thickness_reference,
+        )
+
+    return ThesisPriorConfig(
+        path=path,
+        source=dict(source),
+        strategy=dict(strategy),
+        priors_by_time_s=dict(sorted(priors.items())),
+    )
+
+
 def transform_value(minimum: float, maximum: float, transform: str, unit_value: float) -> float:
     if transform == "log":
         if minimum <= 0.0 or maximum <= 0.0:
@@ -661,6 +829,23 @@ def thickness_from_unit_value(
     return transform_value(
         thickness_min,
         thickness_max,
+        bounds.thickness_transform,
+        unit_value,
+    )
+
+
+def thesis_thickness_from_unit_value(
+    bounds: ModelBounds,
+    unit_value: float,
+    prior: AfmParameterPrior,
+) -> float:
+    if prior.thickness_min_nm is None or prior.thickness_max_nm is None:
+        raise OptimizerError(
+            f"Thesis prior missing thickness bounds for time_s={prior.time_s}"
+        )
+    return transform_value(
+        prior.thickness_min_nm,
+        prior.thickness_max_nm,
         bounds.thickness_transform,
         unit_value,
     )
@@ -972,12 +1157,14 @@ def mmgm_single_global_parameters_from_unit_vector(
     bounds: ModelBounds,
     n_spectra: int,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    thesis_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     spectrum_times_s: Sequence[int] | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
     afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
 ) -> list[tuple[float, float, float, float]]:
     if afm_priors_mode not in AFM_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
@@ -989,12 +1176,20 @@ def mmgm_single_global_parameters_from_unit_vector(
         raise OptimizerError("AFM priors fixed mode requires AFM priors")
     if afm_sigl_mode == "fixed" and afm_priors_mode == "bounded" and afm_priors_by_time_s is None:
         raise OptimizerError("AFM sigL fixed mode requires AFM priors")
+    if thesis_priors_mode not in THESIS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid thesis priors mode: {thesis_priors_mode}")
+    if afm_priors_by_time_s is not None and thesis_priors_by_time_s is not None:
+        raise OptimizerError("AFM priors and thesis priors cannot be enabled together")
+    if thesis_priors_mode == "fixed" and thesis_priors_by_time_s is None:
+        raise OptimizerError("Thesis priors fixed mode requires thesis priors")
 
     parameters_per_spectrum = parameter_count_for_model(
         "mmgm_spheres_single",
         afm_priors_mode=afm_priors_mode,
         afm_sigl_mode=afm_sigl_mode,
         afm_priors_enabled=afm_priors_by_time_s is not None,
+        thesis_priors_mode=thesis_priors_mode,
+        thesis_priors_enabled=thesis_priors_by_time_s is not None,
     )
     expected_values = parameters_per_spectrum * n_spectra
     if len(unit_values) != expected_values:
@@ -1012,7 +1207,21 @@ def mmgm_single_global_parameters_from_unit_vector(
             afm_priors_by_time_s=afm_priors_by_time_s,
             spectrum_times_s=spectrum_times_s,
         )
-    if afm_priors_mode == "bounded" or afm_priors_by_time_s is None:
+    if thesis_priors_by_time_s is not None:
+        if spectrum_times_s is None:
+            raise OptimizerError("Thesis priors require spectrum_times_s for MMGM mapping")
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "Thesis priors require one spectrum time per MMGM spectrum"
+            )
+        require_afm_prior_times(
+            afm_priors_by_time_s=thesis_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+    if (
+        afm_priors_mode == "bounded"
+        or (afm_priors_by_time_s is None and thesis_priors_by_time_s is None)
+    ):
         require_mmgm_single_bounds(bounds)
         assert bounds.rave_min_nm is not None
         assert bounds.rave_max_nm is not None
@@ -1021,6 +1230,45 @@ def mmgm_single_global_parameters_from_unit_vector(
     parameters: list[tuple[float, float, float, float]] = []
     for spectrum_index in range(n_spectra):
         index = parameters_per_spectrum * spectrum_index
+        if thesis_priors_by_time_s is not None:
+            assert spectrum_times_s is not None
+            time_s = spectrum_times_s[spectrum_index]
+            try:
+                prior = thesis_priors_by_time_s[time_s]
+            except KeyError as exc:
+                raise OptimizerError(
+                    f"Missing thesis prior for spectrum time_s={time_s}"
+                ) from exc
+            effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
+            if thesis_priors_mode == "fixed":
+                if prior.thickness_reference_nm is None:
+                    raise OptimizerError(
+                        f"Thesis prior missing thickness reference for time_s={time_s}"
+                    )
+                thickness_nm = prior.thickness_reference_nm
+                rave_nm = prior.rave_reference_nm
+                sig_l = prior.sig_l_reference
+            else:
+                thickness_nm = thesis_thickness_from_unit_value(
+                    bounds,
+                    unit_values[index + 1],
+                    prior,
+                )
+                rave_nm = transform_value(
+                    prior.rave_min_nm,
+                    prior.rave_max_nm,
+                    bounds.rave_transform,
+                    unit_values[index + 2],
+                )
+                sig_l = transform_value(
+                    prior.sig_l_min,
+                    prior.sig_l_max,
+                    bounds.sig_l_transform,
+                    unit_values[index + 3],
+                )
+            parameters.append((effe, thickness_nm, rave_nm, sig_l))
+            continue
+
         if afm_priors_by_time_s is None:
             prior = None
             assert bounds.rave_min_nm is not None
@@ -1159,6 +1407,36 @@ def lognormal_radius_percentile(rave_nm: float, sig_l: float, percentile: float)
     return math.exp(mu_l + z_value * sig_l)
 
 
+def thesis_prior_reference_json(prior: AfmParameterPrior) -> dict[str, Any]:
+    if prior.thickness_reference_nm is None:
+        raise OptimizerError(
+            f"Thesis prior missing thickness reference for time_s={prior.time_s}"
+        )
+    if prior.thickness_min_nm is None or prior.thickness_max_nm is None:
+        raise OptimizerError(
+            f"Thesis prior missing thickness bounds for time_s={prior.time_s}"
+        )
+    return {
+        "rave_nm": prior.rave_reference_nm,
+        "sig_l": prior.sig_l_reference,
+        "thickness_nm": prior.thickness_reference_nm,
+        "bounds": {
+            "rave_nm": {
+                "min": prior.rave_min_nm,
+                "max": prior.rave_max_nm,
+            },
+            "sig_l": {
+                "min": prior.sig_l_min,
+                "max": prior.sig_l_max,
+            },
+            "thickness_nm": {
+                "min": prior.thickness_min_nm,
+                "max": prior.thickness_max_nm,
+            },
+        },
+    }
+
+
 def violates_thickness_tail_constraint(
     thickness_nm: float,
     rave_nm: float,
@@ -1178,12 +1456,22 @@ def parameter_count_for_model(
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
     afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
     afm_priors_enabled: bool = False,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+    thesis_priors_enabled: bool = False,
 ) -> int:
     if afm_priors_mode not in AFM_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
     if afm_sigl_mode not in AFM_SIGL_MODES:
         raise OptimizerError(f"Invalid AFM sigL mode: {afm_sigl_mode}")
+    if thesis_priors_mode not in THESIS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid thesis priors mode: {thesis_priors_mode}")
+    if afm_priors_enabled and thesis_priors_enabled:
+        raise OptimizerError("AFM priors and thesis priors cannot be enabled together")
     if model_name in MMGM_SINGLE_MODELS:
+        if thesis_priors_enabled and thesis_priors_mode == "fixed":
+            return 1
+        if thesis_priors_enabled and thesis_priors_mode == "bounded":
+            return 4
         if afm_priors_enabled and afm_priors_mode == "fixed":
             return 2
         if afm_priors_enabled and afm_priors_mode == "bounded" and afm_sigl_mode == "fixed":
@@ -1214,20 +1502,27 @@ def feasible_initial_population(
     bounds: ModelBounds,
     population_count: int,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    thesis_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     spectrum_times_s: Sequence[int] | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
     afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
 ) -> list[list[float]]:
     rng = random.Random(bounds.seed)
     afm_priors_enabled = afm_priors_by_time_s is not None
+    thesis_priors_enabled = thesis_priors_by_time_s is not None
+    if afm_priors_enabled and thesis_priors_enabled:
+        raise OptimizerError("AFM priors and thesis priors cannot be enabled together")
     parameters_per_spectrum = parameter_count_for_model(
         model_name,
         afm_priors_mode=afm_priors_mode,
         afm_sigl_mode=afm_sigl_mode,
         afm_priors_enabled=afm_priors_enabled,
+        thesis_priors_mode=thesis_priors_mode,
+        thesis_priors_enabled=thesis_priors_enabled,
     )
     if afm_priors_by_time_s is not None:
         if model_name not in MMGM_SINGLE_MODELS:
@@ -1240,6 +1535,18 @@ def feasible_initial_population(
         if len(spectrum_times_s) != n_spectra:
             raise OptimizerError(
                 "AFM priors require one spectrum time per initial-population spectrum"
+            )
+    if thesis_priors_by_time_s is not None:
+        if model_name not in MMGM_SINGLE_MODELS:
+            raise OptimizerError("Thesis priors are only supported for MMGM single models")
+        require_afm_prior_times(
+            afm_priors_by_time_s=thesis_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+        assert spectrum_times_s is not None
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "Thesis priors require one spectrum time per initial-population spectrum"
             )
     population: list[list[float]] = [[0.5] * (parameters_per_spectrum * n_spectra)]
     while len(population) < population_count:
@@ -1255,9 +1562,31 @@ def feasible_initial_population(
             effe_unit = rng.random()
             thickness_unit = rng.random()
             effe = transform_value(bounds.effe_min, bounds.effe_max, "none", effe_unit)
-            thickness_nm = thickness_from_unit_value(bounds, thickness_unit)
-            unit_values = [effe_unit, thickness_unit]
-            if model_name in MMGM_SINGLE_MODELS and parameters_per_spectrum == 4:
+            if thesis_priors_by_time_s is not None:
+                assert spectrum_times_s is not None
+                prior = thesis_priors_by_time_s[spectrum_times_s[len(candidate_parameters)]]
+                if thesis_priors_mode == "fixed":
+                    if prior.thickness_reference_nm is None:
+                        raise OptimizerError(
+                            "Thesis fixed priors require thickness references"
+                        )
+                    thickness_nm = prior.thickness_reference_nm
+                    unit_values = [effe_unit]
+                else:
+                    thickness_nm = thesis_thickness_from_unit_value(
+                        bounds,
+                        thickness_unit,
+                        prior,
+                    )
+                    unit_values = [effe_unit, thickness_unit]
+            else:
+                thickness_nm = thickness_from_unit_value(bounds, thickness_unit)
+                unit_values = [effe_unit, thickness_unit]
+            if (
+                model_name in MMGM_SINGLE_MODELS
+                and parameters_per_spectrum == 4
+                and thesis_priors_by_time_s is None
+            ):
                 require_mmgm_single_bounds(bounds)
                 assert bounds.rave_min_nm is not None
                 assert bounds.rave_max_nm is not None
@@ -1286,6 +1615,60 @@ def feasible_initial_population(
         candidate_violates_tail_constraint = False
         ordered_parameters = sorted(candidate_parameters, key=lambda item: item[0])
         for spectrum_index, (_, unit_values) in enumerate(ordered_parameters):
+            if thesis_priors_by_time_s is not None:
+                assert spectrum_times_s is not None
+                prior = thesis_priors_by_time_s[spectrum_times_s[spectrum_index]]
+                if thesis_priors_mode == "fixed":
+                    if prior.thickness_reference_nm is None:
+                        raise OptimizerError(
+                            f"Thesis prior missing thickness reference for time_s={prior.time_s}"
+                        )
+                    if violates_thickness_tail_constraint(
+                        prior.thickness_reference_nm,
+                        prior.rave_reference_nm,
+                        prior.sig_l_reference,
+                        bounds,
+                    ):
+                        candidate_violates_tail_constraint = True
+                        break
+                    candidate.extend(unit_values)
+                    continue
+                thickness_nm = thesis_thickness_from_unit_value(
+                    bounds,
+                    unit_values[1],
+                    prior,
+                )
+                attempts = 0
+                while True:
+                    attempts += 1
+                    if attempts > 10000:
+                        raise OptimizerError(
+                            "Could not build a feasible thesis-prior MMGM initial "
+                            "population; check priors and thickness-tail constraint."
+                        )
+                    rave_unit = rng.random()
+                    sig_l_unit = rng.random()
+                    rave_nm = transform_value(
+                        prior.rave_min_nm,
+                        prior.rave_max_nm,
+                        bounds.rave_transform,
+                        rave_unit,
+                    )
+                    sig_l = transform_value(
+                        prior.sig_l_min,
+                        prior.sig_l_max,
+                        bounds.sig_l_transform,
+                        sig_l_unit,
+                    )
+                    if not violates_thickness_tail_constraint(
+                        thickness_nm,
+                        rave_nm,
+                        sig_l,
+                        bounds,
+                    ):
+                        break
+                unit_values = [*unit_values, rave_unit, sig_l_unit]
+
             if afm_priors_by_time_s is not None:
                 assert spectrum_times_s is not None
                 prior = afm_priors_by_time_s[spectrum_times_s[spectrum_index]]
@@ -1403,22 +1786,27 @@ def optimize_global(
     spectra: Sequence[TimedSpectrum],
     paths: OutputPaths,
     afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    thesis_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
     afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
     hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
     hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
     hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
 ) -> GlobalFit:
     best: GlobalFit | None = None
     afm_priors_enabled = afm_priors_by_time_s is not None
+    thesis_priors_enabled = thesis_priors_by_time_s is not None
     parameters_per_spectrum = parameter_count_for_model(
         model_name,
         afm_priors_mode=afm_priors_mode,
         afm_sigl_mode=afm_sigl_mode,
         afm_priors_enabled=afm_priors_enabled,
+        thesis_priors_mode=thesis_priors_mode,
+        thesis_priors_enabled=thesis_priors_enabled,
     )
     n_parameters = parameters_per_spectrum * len(spectra)
     tmp_trial_dir = paths.tmp_dir / "trials"
@@ -1431,12 +1819,14 @@ def optimize_global(
                 bounds,
                 len(spectra),
                 afm_priors_by_time_s=afm_priors_by_time_s,
+                thesis_priors_by_time_s=thesis_priors_by_time_s,
                 spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
                 afm_priors_mode=afm_priors_mode,
                 afm_sigl_mode=afm_sigl_mode,
                 afm_thickness_prior=afm_thickness_prior,
                 afm_thickness_scale_low=afm_thickness_scale_low,
                 afm_thickness_scale_high=afm_thickness_scale_high,
+                thesis_priors_mode=thesis_priors_mode,
             )
             if any(
                 violates_thickness_tail_constraint(
@@ -1551,12 +1941,14 @@ def optimize_global(
         bounds=bounds,
         population_count=population_count,
         afm_priors_by_time_s=afm_priors_by_time_s,
+        thesis_priors_by_time_s=thesis_priors_by_time_s,
         spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
         afm_priors_mode=afm_priors_mode,
         afm_sigl_mode=afm_sigl_mode,
         afm_thickness_prior=afm_thickness_prior,
         afm_thickness_scale_low=afm_thickness_scale_low,
         afm_thickness_scale_high=afm_thickness_scale_high,
+        thesis_priors_mode=thesis_priors_mode,
     )
     differential_evolution(
         lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
@@ -1649,6 +2041,7 @@ def write_result_json(
     geometry: str,
     plot_window: PlotWindow,
     afm_prior: AfmParameterPrior | None = None,
+    thesis_prior: AfmParameterPrior | None = None,
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
@@ -1727,6 +2120,8 @@ def write_result_json(
                     "max": afm_thickness_scale_high * afm_prior.thickness_reference_nm,
                 },
             }
+    if thesis_prior is not None:
+        result["thesis_prior_reference"] = thesis_prior_reference_json(thesis_prior)
     if fit.invalid_points > 0:
         result["warnings"] = ["non_finite_points_present"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1742,11 +2137,13 @@ def write_global_summary_json(
     geometry: str,
     n_parameters: int,
     afm_prior_config: AfmPriorConfig | None = None,
+    thesis_prior_config: ThesisPriorConfig | None = None,
     afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
     afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
     afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
     hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
     hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
     hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
@@ -1799,6 +2196,16 @@ def write_global_summary_json(
             "strategy": afm_prior_config.strategy,
         }
         result["afm_sigl_mode"] = afm_sigl_mode
+    if thesis_prior_config is not None:
+        result["thesis_priors"] = {
+            "enabled": True,
+            "path": project_relative(thesis_prior_config.path),
+            "mode": thesis_priors_mode,
+            "strategy": thesis_prior_config.strategy.get("name"),
+            "source": thesis_prior_config.source.get("input_file"),
+            "source_metadata": thesis_prior_config.source,
+            "strategy_metadata": thesis_prior_config.strategy,
+        }
     if afm_prior_config is not None and afm_thickness_prior == "bounded":
         result["afm_thickness_prior"] = {
             "mode": "bounded",
@@ -1844,6 +2251,9 @@ def write_global_summary_json(
                         "max": afm_thickness_scale_high * prior.thickness_reference_nm,
                     },
                 }
+        if thesis_prior_config is not None:
+            prior = thesis_prior_config.priors_by_time_s[fit.time_s]
+            spectrum_result["thesis_prior_reference"] = thesis_prior_reference_json(prior)
         spectrum_result["h_ag_nm"] = fit.h_ag_nm
         result["spectra"].append(spectrum_result)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1858,11 +2268,13 @@ def run_gnuplot(script_path: Path) -> None:
 
 def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelection) -> int:
     afm_prior_config: AfmPriorConfig | None = None
+    thesis_prior_config: ThesisPriorConfig | None = None
     afm_priors_mode = str(args.afm_priors_mode)
     afm_sigl_mode = str(args.afm_sigl_mode)
     afm_thickness_prior = str(args.afm_thickness_prior)
     afm_thickness_scale_low = float(args.afm_thickness_scale_low)
     afm_thickness_scale_high = float(args.afm_thickness_scale_high)
+    thesis_priors_mode = str(args.thesis_priors_mode)
     hag_linearity_mode = str(args.hag_linearity_mode)
     hag_linearity_weight = float(args.hag_linearity_weight)
     hag_linearity_tolerance = float(args.hag_linearity_tolerance)
@@ -1872,6 +2284,8 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         raise OptimizerError(f"Invalid AFM sigL mode: {afm_sigl_mode}")
     if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
+    if thesis_priors_mode not in THESIS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid thesis priors mode: {thesis_priors_mode}")
     if afm_thickness_scale_low <= 0.0:
         raise OptimizerError("--afm-thickness-scale-low must be positive")
     if afm_thickness_scale_high <= afm_thickness_scale_low:
@@ -1886,6 +2300,8 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         raise OptimizerError("--afm-priors-mode fixed requires --afm-priors-json")
     if afm_priors_mode == "bounded" and afm_sigl_mode == "fixed" and args.afm_priors_json is None:
         raise OptimizerError("--afm-sigl-mode fixed requires --afm-priors-json")
+    if args.afm_priors_json is not None and args.thesis_priors_json is not None:
+        raise OptimizerError("--afm-priors-json and --thesis-priors-json cannot be combined")
     if args.afm_priors_json is not None:
         if selection.model not in MMGM_SINGLE_MODELS:
             raise OptimizerError(
@@ -1893,6 +2309,22 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
                 "mmgm_spheres_single and mmgm_holes_single"
             )
         afm_prior_config = read_afm_prior_config(args.afm_priors_json)
+    if args.thesis_priors_json is not None:
+        if selection.model not in MMGM_SINGLE_MODELS:
+            raise OptimizerError(
+                "--thesis-priors-json is supported only for "
+                "mmgm_spheres_single and mmgm_holes_single"
+            )
+        thesis_prior_config = read_thesis_prior_config(args.thesis_priors_json)
+        strategy_name = thesis_prior_config.strategy.get("name")
+        if thesis_priors_mode == "fixed" and strategy_name != "fixed":
+            raise OptimizerError(
+                "--thesis-priors-mode fixed requires a fixed thesis prior JSON"
+            )
+        if thesis_priors_mode == "bounded" and strategy_name == "fixed":
+            raise OptimizerError(
+                "--thesis-priors-mode bounded requires a bounded thesis prior JSON"
+            )
 
     if not args.transmittance_exe.exists():
         raise OptimizerError(
@@ -1945,6 +2377,11 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             afm_priors_by_time_s=afm_prior_config.priors_by_time_s,
             spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in timed_spectra],
         )
+    if thesis_prior_config is not None:
+        require_afm_prior_times(
+            afm_priors_by_time_s=thesis_prior_config.priors_by_time_s,
+            spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in timed_spectra],
+        )
 
     spectra_only = [timed_spectrum.spectrum for timed_spectrum in timed_spectra]
     plot_window = common_plot_window(spectra_only)
@@ -1960,6 +2397,8 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             afm_priors_mode=afm_priors_mode,
             afm_sigl_mode=afm_sigl_mode,
             afm_priors_enabled=afm_prior_config is not None,
+            thesis_priors_mode=thesis_priors_mode,
+            thesis_priors_enabled=thesis_prior_config is not None,
         )
         * len(timed_spectra)
     )
@@ -1996,6 +2435,14 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             f"{afm_prior_config.source.get('radius_proxy_name')}",
             flush=True,
         )
+    if thesis_prior_config is not None:
+        print(
+            f"  thesis priors: {thesis_prior_config.path}\n"
+            f"  thesis priors mode: {thesis_priors_mode}\n"
+            f"  thesis strategy: {thesis_prior_config.strategy.get('name')}\n"
+            f"  thesis source: {thesis_prior_config.source.get('input_file')}",
+            flush=True,
+        )
 
     global_fit = optimize_global(
         transmittance_exe=args.transmittance_exe,
@@ -2009,11 +2456,15 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         afm_priors_by_time_s=(
             afm_prior_config.priors_by_time_s if afm_prior_config is not None else None
         ),
+        thesis_priors_by_time_s=(
+            thesis_prior_config.priors_by_time_s if thesis_prior_config is not None else None
+        ),
         afm_priors_mode=afm_priors_mode,
         afm_sigl_mode=afm_sigl_mode,
         afm_thickness_prior=afm_thickness_prior,
         afm_thickness_scale_low=afm_thickness_scale_low,
         afm_thickness_scale_high=afm_thickness_scale_high,
+        thesis_priors_mode=thesis_priors_mode,
         hag_linearity_mode=hag_linearity_mode,
         hag_linearity_weight=hag_linearity_weight,
         hag_linearity_tolerance=hag_linearity_tolerance,
@@ -2038,6 +2489,11 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
             afm_prior=(
                 afm_prior_config.priors_by_time_s[fit.time_s]
                 if afm_prior_config is not None
+                else None
+            ),
+            thesis_prior=(
+                thesis_prior_config.priors_by_time_s[fit.time_s]
+                if thesis_prior_config is not None
                 else None
             ),
             afm_thickness_prior=afm_thickness_prior,
@@ -2065,11 +2521,13 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         geometry=selection.geometry,
         n_parameters=n_parameters,
         afm_prior_config=afm_prior_config,
+        thesis_prior_config=thesis_prior_config,
         afm_priors_mode=afm_priors_mode,
         afm_sigl_mode=afm_sigl_mode,
         afm_thickness_prior=afm_thickness_prior,
         afm_thickness_scale_low=afm_thickness_scale_low,
         afm_thickness_scale_high=afm_thickness_scale_high,
+        thesis_priors_mode=thesis_priors_mode,
         hag_linearity_mode=hag_linearity_mode,
         hag_linearity_weight=hag_linearity_weight,
         hag_linearity_tolerance=hag_linearity_tolerance,

@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "source": {
+    "input_file": "data/experimental/thesis/chap4-prior.dat",
+    "model": "mmgm_single",
+    "distribution": "single_lognormal",
+    "columns": [
+      "time_s",
+      "Rave_nm",
+      "sigL_radius",
+      "thickness_nm"
+    ]
+  },
+  "strategy": {
+    "name": "soft",
+    "description": "bounded thesis morphology values",
+    "sig_l_absolute_min": 0.08,
+    "sig_l_absolute_max": 1.0,
+    "scale_low": 0.75,
+    "scale_high": 1.25
+  },
+  "bounds_by_time_s": {
+    "10": {
+      "time_s": 10,
+      "reference_values": {
+        "rave_nm": 8.5,
+        "sig_l": 0.445,
+        "thickness_nm": 5.9
+      },
+      "rave_nm": {
+        "min": 6.375,
+        "max": 10.625,
+        "reference": 8.5
+      },
+      "sig_l": {
+        "min": 0.33375,
+        "max": 0.55625,
+        "reference": 0.445
+      },
+      "thickness_nm": {
+        "min": 4.425000000000001,
+        "max": 7.375,
+        "reference": 5.9
+      }
+    },
+    "20": {
+      "time_s": 20,
+      "reference_values": {
+        "rave_nm": 8.7,
+        "sig_l": 0.494,
+        "thickness_nm": 6.4
+      },
+      "rave_nm": {
+        "min": 6.5249999999999995,
+        "max": 10.875,
+        "reference": 8.7
+      },
+      "sig_l": {
+        "min": 0.3705,
+        "max": 0.6174999999999999,
+        "reference": 0.494
+      },
+      "thickness_nm": {
+        "min": 4.800000000000001,
+        "max": 8.0,
+        "reference": 6.4
+      }
+    },
+    "30": {
+      "time_s": 30,
+      "reference_values": {
+        "rave_nm": 10.0,
+        "sig_l": 0.506,
+        "thickness_nm": 9.8
+      },
+      "rave_nm": {
+        "min": 7.5,
+        "max": 12.5,
+        "reference": 10.0
+      },
+      "sig_l": {
+        "min": 0.3795,
+        "max": 0.6325000000000001,
+        "reference": 0.506
+      },
+      "thickness_nm": {
+        "min": 7.3500000000000005,
+        "max": 12.25,
+        "reference": 9.8
+      }
+    },
+    "40": {
+      "time_s": 40,
+      "reference_values": {
+        "rave_nm": 10.4,
+        "sig_l": 0.689,
+        "thickness_nm": 10.4
+      },
+      "rave_nm": {
+        "min": 7.800000000000001,
+        "max": 13.0,
+        "reference": 10.4
+      },
+      "sig_l": {
+        "min": 0.5167499999999999,
+        "max": 0.86125,
+        "reference": 0.689
+      },
+      "thickness_nm": {
+        "min": 7.800000000000001,
+        "max": 13.0,
+        "reference": 10.4
+      }
+    },
+    "50": {
+      "time_s": 50,
+      "reference_values": {
+        "rave_nm": 10.6,
+        "sig_l": 0.512,
+        "thickness_nm": 12.4
+      },
+      "rave_nm": {
+        "min": 7.949999999999999,
+        "max": 13.25,
+        "reference": 10.6
+      },
+      "sig_l": {
+        "min": 0.384,
+        "max": 0.64,
+        "reference": 0.512
+      },
+      "thickness_nm": {
+        "min": 9.3,
+        "max": 15.5,
+        "reference": 12.4
+      }
+    },
+    "60": {
+      "time_s": 60,
+      "reference_values": {
+        "rave_nm": 12.9,
+        "sig_l": 0.612,
+        "thickness_nm": 13.2
+      },
+      "rave_nm": {
+        "min": 9.675,
+        "max": 16.125,
+        "reference": 12.9
+      },
+      "sig_l": {
+        "min": 0.45899999999999996,
+        "max": 0.765,
+        "reference": 0.612
+      },
+      "thickness_nm": {
+        "min": 9.899999999999999,
+        "max": 16.5,
+        "reference": 13.2
+      }
+    }
+  }
+}
