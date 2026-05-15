@@ -117,7 +117,7 @@ def run_plot_expression(
     )
 
 
-def reference_expression(reference_file: Path, ref_column: int, title: str = "AFM ref") -> str:
+def reference_expression(reference_file: Path, ref_column: int, title: str = "prior ref") -> str:
     return (
         f"{gnuplot_quote(reference_file)} using 1:{ref_column} "
         f"with linespoints lw 2 dt 2 pt 6 ps 1 lc rgb 'black' title {gnuplot_quote(title)}"

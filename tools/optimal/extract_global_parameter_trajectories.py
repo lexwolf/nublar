@@ -143,12 +143,18 @@ def reference_rows(result: dict[str, Any]) -> dict[int, dict[str, float]]:
             continue
         time_s = int(spectrum["time_s"])
         prior = spectrum.get("afm_prior_reference")
+        reference_source = "afm"
+        if not isinstance(prior, dict):
+            prior = spectrum.get("thesis_prior_reference")
+            reference_source = "thesis"
         if not isinstance(prior, dict):
             continue
         thickness = spectrum.get("afm_thickness_reference")
         thickness_ref = math.nan
         if isinstance(thickness, dict):
             thickness_ref = finite_or_nan(thickness.get("thickness_nm"))
+        elif reference_source == "thesis":
+            thickness_ref = finite_or_nan(prior.get("thickness_nm"))
         references[time_s] = {
             "rave_ref": finite_or_nan(prior.get("rave_nm")),
             "sigl_ref": finite_or_nan(prior.get("sig_l")),
@@ -340,6 +346,16 @@ def main() -> int:
                         if isinstance(result.get("afm_priors"), dict)
                         else None
                     ),
+                    "thesis_priors_mode": (
+                        result.get("thesis_priors", {}).get("mode")
+                        if isinstance(result.get("thesis_priors"), dict)
+                        else None
+                    ),
+                    "thesis_strategy": (
+                        result.get("thesis_priors", {}).get("strategy")
+                        if isinstance(result.get("thesis_priors"), dict)
+                        else None
+                    ),
                     "n_parameters": (
                         objective.get("n_parameters")
                         if isinstance(objective, dict)
@@ -350,7 +366,7 @@ def main() -> int:
             )
 
         trajectory_file = output_dir / f"trajectory_{safe_strategy}.dat"
-        reference_file = output_dir / f"afm_reference_{safe_strategy}.dat"
+        reference_file = output_dir / f"morphology_reference_{safe_strategy}.dat"
         write_trajectory(trajectory_file, all_rows)
         write_references(reference_file, all_references)
 

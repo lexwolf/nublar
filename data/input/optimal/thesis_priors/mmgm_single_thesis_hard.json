@@ -2,6 +2,7 @@
   "schema_version": 1,
   "source": {
     "input_file": "data/experimental/thesis/chap4-prior.dat",
+    "source_file": "data/experimental/thesis/chap4-prior.dat",
     "model": "mmgm_single",
     "distribution": "single_lognormal",
     "columns": [
@@ -16,6 +17,20 @@
     "description": "bounded thesis morphology values",
     "sig_l_absolute_min": 0.08,
     "sig_l_absolute_max": 1.0,
+    "parameter_scales": {
+      "rave_nm": {
+        "scale_low": 0.9,
+        "scale_high": 1.1
+      },
+      "sig_l": {
+        "scale_low": 0.9,
+        "scale_high": 1.1
+      },
+      "thickness_nm": {
+        "scale_low": 0.9,
+        "scale_high": 1.1
+      }
+    },
     "scale_low": 0.9,
     "scale_high": 1.1
   },
@@ -26,6 +41,20 @@
         "rave_nm": 8.5,
         "sig_l": 0.445,
         "thickness_nm": 5.9
+      },
+      "bounds": {
+        "rave_nm": {
+          "min": 7.65,
+          "max": 9.350000000000001
+        },
+        "sig_l": {
+          "min": 0.4005,
+          "max": 0.48950000000000005
+        },
+        "thickness_nm": {
+          "min": 5.3100000000000005,
+          "max": 6.490000000000001
+        }
       },
       "rave_nm": {
         "min": 7.65,
@@ -50,6 +79,20 @@
         "sig_l": 0.494,
         "thickness_nm": 6.4
       },
+      "bounds": {
+        "rave_nm": {
+          "min": 7.829999999999999,
+          "max": 9.57
+        },
+        "sig_l": {
+          "min": 0.4446,
+          "max": 0.5434
+        },
+        "thickness_nm": {
+          "min": 5.760000000000001,
+          "max": 7.040000000000001
+        }
+      },
       "rave_nm": {
         "min": 7.829999999999999,
         "max": 9.57,
@@ -72,6 +115,20 @@
         "rave_nm": 10.0,
         "sig_l": 0.506,
         "thickness_nm": 9.8
+      },
+      "bounds": {
+        "rave_nm": {
+          "min": 9.0,
+          "max": 11.0
+        },
+        "sig_l": {
+          "min": 0.4554,
+          "max": 0.5566000000000001
+        },
+        "thickness_nm": {
+          "min": 8.82,
+          "max": 10.780000000000001
+        }
       },
       "rave_nm": {
         "min": 9.0,
@@ -96,6 +153,20 @@
         "sig_l": 0.689,
         "thickness_nm": 10.4
       },
+      "bounds": {
+        "rave_nm": {
+          "min": 9.360000000000001,
+          "max": 11.440000000000001
+        },
+        "sig_l": {
+          "min": 0.6201,
+          "max": 0.7579
+        },
+        "thickness_nm": {
+          "min": 9.360000000000001,
+          "max": 11.440000000000001
+        }
+      },
       "rave_nm": {
         "min": 9.360000000000001,
         "max": 11.440000000000001,
@@ -119,6 +190,20 @@
         "sig_l": 0.512,
         "thickness_nm": 12.4
       },
+      "bounds": {
+        "rave_nm": {
+          "min": 9.54,
+          "max": 11.66
+        },
+        "sig_l": {
+          "min": 0.46080000000000004,
+          "max": 0.5632
+        },
+        "thickness_nm": {
+          "min": 11.16,
+          "max": 13.640000000000002
+        }
+      },
       "rave_nm": {
         "min": 9.54,
         "max": 11.66,
@@ -141,6 +226,20 @@
         "rave_nm": 12.9,
         "sig_l": 0.612,
         "thickness_nm": 13.2
+      },
+      "bounds": {
+        "rave_nm": {
+          "min": 11.610000000000001,
+          "max": 14.190000000000001
+        },
+        "sig_l": {
+          "min": 0.5508,
+          "max": 0.6732
+        },
+        "thickness_nm": {
+          "min": 11.879999999999999,
+          "max": 14.52
+        }
       },
       "rave_nm": {
         "min": 11.610000000000001,
