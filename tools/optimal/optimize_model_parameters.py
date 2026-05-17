@@ -537,20 +537,23 @@ def read_thesis_prior_config(path: Path) -> ThesisPriorConfig:
                     f"time_s={time_s}"
                 )
         else:
-            if not rave_min < rave_reference < rave_max:
+            rave_fixed = rave_min == rave_max == rave_reference
+            sig_l_fixed = sig_l_min == sig_l_max == sig_l_reference
+            thickness_fixed = thickness_min == thickness_max == thickness_reference
+            if not (rave_fixed or rave_min < rave_reference < rave_max):
                 raise OptimizerError(
                     "Thesis prior rave_nm bounds must satisfy "
-                    f"min < reference < max for time_s={time_s}"
+                    f"min < reference < max or min=reference=max for time_s={time_s}"
                 )
-            if not sig_l_min < sig_l_reference < sig_l_max:
+            if not (sig_l_fixed or sig_l_min < sig_l_reference < sig_l_max):
                 raise OptimizerError(
                     "Thesis prior sig_l bounds must satisfy "
-                    f"min < reference < max for time_s={time_s}"
+                    f"min < reference < max or min=reference=max for time_s={time_s}"
                 )
-            if not thickness_min < thickness_reference < thickness_max:
+            if not (thickness_fixed or thickness_min < thickness_reference < thickness_max):
                 raise OptimizerError(
                     "Thesis prior thickness_nm bounds must satisfy "
-                    f"min < reference < max for time_s={time_s}"
+                    f"min < reference < max or min=reference=max for time_s={time_s}"
                 )
 
         priors[time_s] = ThesisParameterPrior(
