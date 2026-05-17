@@ -102,6 +102,28 @@ class ModelBounds:
 
 
 @dataclass(frozen=True)
+class ThesisParameterPrior:
+    time_s: int
+    rave_min_nm: float
+    rave_max_nm: float
+    rave_reference_nm: float
+    sig_l_min: float
+    sig_l_max: float
+    sig_l_reference: float
+    thickness_min_nm: float
+    thickness_max_nm: float
+    thickness_reference_nm: float
+
+
+@dataclass(frozen=True)
+class ThesisPriorConfig:
+    path: Path
+    source: dict[str, Any]
+    strategy: dict[str, Any]
+    priors_by_time_s: dict[int, ThesisParameterPrior]
+
+
+@dataclass(frozen=True)
 class Candidate:
     effe: float
     thickness_nm: float
@@ -222,6 +244,36 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Override max generations for stochastic optimizers (MMGM only)",
+    )
+    parser.add_argument(
+        "--population-size",
+        type=int,
+        default=None,
+        help="Override population size for stochastic optimizers (MMGM only)",
+    )
+    parser.add_argument(
+        "--thesis-priors-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional thesis-derived Rave/sigL/thickness prior bounds JSON. "
+            "Supported only for MMGM single-lognormal models."
+        ),
+    )
+    parser.add_argument(
+        "--thesis-priors-mode",
+        choices=("bounded", "fixed"),
+        default="bounded",
+        help=(
+            "How to use thesis priors: 'bounded' fits Rave, sig_l, and thickness "
+            "within thesis bounds; 'fixed' uses thesis morphology values directly."
+        ),
+    )
+    parser.add_argument(
+        "--spectrum-time-s",
+        type=int,
+        default=None,
+        help="Deposition time for a single-spectrum thesis-prior optimization.",
     )
     return parser.parse_args()
 
@@ -362,6 +414,195 @@ def read_bounds(path: Path, model_name: str) -> ModelBounds:
         ),
         seed=int(differential_evolution.get("seed", 12345)),
         thickness_tail_constraint=thickness_tail_constraint,
+    )
+
+
+def require_nested_mapping(
+    raw: dict[str, Any],
+    key: str,
+    field_path: str,
+    time_s: int | None = None,
+) -> dict[str, Any]:
+    value = raw.get(key)
+    if not isinstance(value, dict):
+        context = f" for time_s={time_s}" if time_s is not None else ""
+        raise OptimizerError(f"Thesis prior field {field_path}{context} must be an object")
+    return value
+
+
+def require_finite_number(
+    value: object,
+    field_path: str,
+    time_s: int | None = None,
+) -> float:
+    context = f" for time_s={time_s}" if time_s is not None else ""
+    if not isinstance(value, (int, float)):
+        raise OptimizerError(f"Thesis prior field {field_path}{context} must be numeric")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise OptimizerError(f"Thesis prior field {field_path}{context} must be finite")
+    return parsed
+
+
+def read_thesis_prior_config(path: Path) -> ThesisPriorConfig:
+    if not path.exists():
+        raise OptimizerError(f"Thesis priors JSON does not exist: {path}")
+    if not path.is_file():
+        raise OptimizerError(f"Thesis priors JSON is not a file: {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OptimizerError(f"Could not parse thesis priors JSON {path}: {exc}") from exc
+
+    if raw.get("schema_version") != 1:
+        raise OptimizerError("Thesis priors JSON schema_version must be 1")
+
+    source = require_nested_mapping(raw, "source", "source")
+    if source.get("model") != "mmgm_single":
+        raise OptimizerError("Thesis priors source.model must be 'mmgm_single'")
+    if source.get("distribution") != "single_lognormal":
+        raise OptimizerError(
+            "Thesis priors source.distribution must be 'single_lognormal'"
+        )
+
+    strategy = raw.get("strategy", {})
+    if not isinstance(strategy, dict):
+        raise OptimizerError("Thesis priors field strategy must be an object")
+    strategy_name = strategy.get("name")
+    if not isinstance(strategy_name, str) or not strategy_name:
+        raise OptimizerError("Thesis priors strategy.name must be a non-empty string")
+    is_fixed_strategy = strategy_name == "fixed"
+
+    bounds_by_time = raw.get("bounds_by_time_s")
+    if not isinstance(bounds_by_time, dict) or not bounds_by_time:
+        raise OptimizerError("Thesis priors bounds_by_time_s must be a non-empty object")
+
+    priors: dict[int, ThesisParameterPrior] = {}
+    for raw_time_s, entry in bounds_by_time.items():
+        try:
+            time_s = int(raw_time_s)
+        except (TypeError, ValueError) as exc:
+            raise OptimizerError(
+                f"Thesis priors time key must parse to an integer: {raw_time_s!r}"
+            ) from exc
+        if str(time_s) != str(raw_time_s):
+            raise OptimizerError(
+                f"Thesis priors time key must be a base-10 integer string: {raw_time_s!r}"
+            )
+        if time_s in priors:
+            raise OptimizerError(f"Duplicate thesis prior time_s: {time_s}")
+        if not isinstance(entry, dict):
+            raise OptimizerError(f"Thesis prior entry for time_s={time_s} must be an object")
+
+        rave = require_nested_mapping(entry, "rave_nm", "rave_nm", time_s)
+        sig_l = require_nested_mapping(entry, "sig_l", "sig_l", time_s)
+        thickness = require_nested_mapping(entry, "thickness_nm", "thickness_nm", time_s)
+        rave_min = require_finite_number(rave.get("min"), "rave_nm.min", time_s)
+        rave_max = require_finite_number(rave.get("max"), "rave_nm.max", time_s)
+        rave_reference = require_finite_number(
+            rave.get("reference"), "rave_nm.reference", time_s
+        )
+        sig_l_min = require_finite_number(sig_l.get("min"), "sig_l.min", time_s)
+        sig_l_max = require_finite_number(sig_l.get("max"), "sig_l.max", time_s)
+        sig_l_reference = require_finite_number(
+            sig_l.get("reference"), "sig_l.reference", time_s
+        )
+        thickness_min = require_finite_number(
+            thickness.get("min"), "thickness_nm.min", time_s
+        )
+        thickness_max = require_finite_number(
+            thickness.get("max"), "thickness_nm.max", time_s
+        )
+        thickness_reference = require_finite_number(
+            thickness.get("reference"), "thickness_nm.reference", time_s
+        )
+
+        if rave_min <= 0.0:
+            raise OptimizerError(f"Thesis prior rave_nm.min must be > 0 for time_s={time_s}")
+        if sig_l_min < 0.0:
+            raise OptimizerError(f"Thesis prior sig_l.min must be >= 0 for time_s={time_s}")
+        if thickness_min <= 0.0:
+            raise OptimizerError(
+                f"Thesis prior thickness_nm.min must be > 0 for time_s={time_s}"
+            )
+        if is_fixed_strategy:
+            if not (
+                rave_min == rave_max == rave_reference
+                and sig_l_min == sig_l_max == sig_l_reference
+                and thickness_min == thickness_max == thickness_reference
+            ):
+                raise OptimizerError(
+                    "Fixed thesis priors must have min=max=reference for "
+                    f"time_s={time_s}"
+                )
+        else:
+            if not rave_min < rave_reference < rave_max:
+                raise OptimizerError(
+                    "Thesis prior rave_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+            if not sig_l_min < sig_l_reference < sig_l_max:
+                raise OptimizerError(
+                    "Thesis prior sig_l bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+            if not thickness_min < thickness_reference < thickness_max:
+                raise OptimizerError(
+                    "Thesis prior thickness_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+
+        priors[time_s] = ThesisParameterPrior(
+            time_s=time_s,
+            rave_min_nm=rave_min,
+            rave_max_nm=rave_max,
+            rave_reference_nm=rave_reference,
+            sig_l_min=sig_l_min,
+            sig_l_max=sig_l_max,
+            sig_l_reference=sig_l_reference,
+            thickness_min_nm=thickness_min,
+            thickness_max_nm=thickness_max,
+            thickness_reference_nm=thickness_reference,
+        )
+
+    return ThesisPriorConfig(
+        path=path,
+        source=dict(source),
+        strategy=dict(strategy),
+        priors_by_time_s=dict(sorted(priors.items())),
+    )
+
+
+def bounds_with_thesis_prior(
+    bounds: ModelBounds,
+    prior: ThesisParameterPrior,
+    mode: str,
+) -> ModelBounds:
+    if mode == "fixed":
+        return replace(
+            bounds,
+            thickness_min_nm=prior.thickness_reference_nm,
+            thickness_max_nm=prior.thickness_reference_nm,
+            thickness_transform="none",
+            rave_min_nm=prior.rave_reference_nm,
+            rave_max_nm=prior.rave_reference_nm,
+            rave_transform="none",
+            sig_l_min=prior.sig_l_reference,
+            sig_l_max=prior.sig_l_reference,
+            sig_l_transform="none",
+        )
+    if mode != "bounded":
+        raise OptimizerError(f"Invalid thesis priors mode: {mode}")
+    return replace(
+        bounds,
+        thickness_min_nm=prior.thickness_min_nm,
+        thickness_max_nm=prior.thickness_max_nm,
+        thickness_transform="none",
+        rave_min_nm=prior.rave_min_nm,
+        rave_max_nm=prior.rave_max_nm,
+        sig_l_min=prior.sig_l_min,
+        sig_l_max=prior.sig_l_max,
     )
 
 
@@ -553,6 +794,16 @@ def trial_stem(experimental_basename: str) -> str:
 
 def output_stem(experimental_basename: str) -> str:
     return f"optimal_{experimental_basename}"
+
+
+def deposition_time_from_spectrum_name(path: Path) -> int:
+    parts = path.stem.split("_")
+    for part in parts:
+        if part.endswith("s") and part[:-1].isdigit():
+            return int(part[:-1])
+    raise OptimizerError(
+        f"Could not infer deposition time from spectrum filename: {path.name}"
+    )
 
 
 def read_model_spectrum(path: Path) -> Spectrum:
@@ -1164,8 +1415,17 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
         bounds = replace(bounds, seed=args.seed)
     if args.max_generations is not None:
         bounds = replace(bounds, max_generations=args.max_generations)
+    if args.population_size is not None:
+        bounds = replace(bounds, population_size=args.population_size)
+    thesis_prior_config: ThesisPriorConfig | None = None
+    if args.thesis_priors_json is not None:
+        if selection.model not in {"mmgm_spheres_single", "mmgm_holes_single"}:
+            raise OptimizerError("Thesis priors are supported only for MMGM single models")
+        thesis_prior_config = read_thesis_prior_config(args.thesis_priors_json)
     spectra_paths = discover_spectra(args.spectra_dir)
     spectra = [read_experimental_spectrum(path) for path in spectra_paths]
+    if thesis_prior_config is not None and args.spectrum_time_s is not None and len(spectra) != 1:
+        raise OptimizerError("--spectrum-time-s requires exactly one input spectrum")
     for spectrum in spectra:
         validate_uniform_grid(spectrum)
     plot_window = common_plot_window(spectra)
@@ -1177,6 +1437,11 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
             f"population_size={bounds.population_size}, "
             f"max_generations={bounds.max_generations}, seed={bounds.seed}"
         )
+        if thesis_prior_config is not None:
+            print(
+                f"{selected_lib.DISPLAY_NAME} {selection.geometry} thesis priors: "
+                f"{thesis_prior_config.path} mode={args.thesis_priors_mode}"
+            )
     else:
         print(
             f"{selected_lib.DISPLAY_NAME} {selection.geometry} grid: "
@@ -1211,6 +1476,25 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
             continue
 
         print(f"==> Fitting {spectrum.path}")
+        spectrum_bounds = bounds
+        thesis_prior: ThesisParameterPrior | None = None
+        if thesis_prior_config is not None:
+            time_s = (
+                args.spectrum_time_s
+                if args.spectrum_time_s is not None
+                else deposition_time_from_spectrum_name(spectrum.path)
+            )
+            try:
+                thesis_prior = thesis_prior_config.priors_by_time_s[time_s]
+            except KeyError as exc:
+                raise OptimizerError(
+                    f"Missing thesis prior for spectrum time_s={time_s}"
+                ) from exc
+            spectrum_bounds = bounds_with_thesis_prior(
+                bounds,
+                thesis_prior,
+                args.thesis_priors_mode,
+            )
         stem = output_stem(spectrum.basename)
         theoretical_path = paths.output_dir / f"{stem}.dat"
         result_path = paths.output_dir / f"{stem}.json"
@@ -1221,7 +1505,7 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
             best = optimize_mmgm_single_spectrum(
                 transmittance_exe=args.transmittance_exe,
                 template=template,
-                bounds=bounds,
+                bounds=spectrum_bounds,
                 model=selected_lib,
                 geometry=selection.geometry,
                 experimental=spectrum,
@@ -1232,7 +1516,7 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
             best = optimize_spectrum(
                 transmittance_exe=args.transmittance_exe,
                 template=template,
-                bounds=bounds,
+                bounds=spectrum_bounds,
                 model=selected_lib,
                 geometry=selection.geometry,
                 experimental=spectrum,
@@ -1247,11 +1531,39 @@ def run_effective_medium(args: argparse.Namespace, selection: ModelSelection) ->
             gnuplot_path=gnuplot_path,
             image_path=image_path,
             best=best,
-            bounds=bounds,
+            bounds=spectrum_bounds,
             model=selected_lib,
             geometry=selection.geometry,
             plot_window=plot_window,
         )
+        if thesis_prior is not None:
+            result_raw = json.loads(result_path.read_text(encoding="utf-8"))
+            result_raw["thesis_priors"] = {
+                "path": project_relative(thesis_prior_config.path),
+                "mode": args.thesis_priors_mode,
+                "strategy": thesis_prior_config.strategy,
+                "time_s": thesis_prior.time_s,
+                "reference": {
+                    "rave_nm": thesis_prior.rave_reference_nm,
+                    "sig_l": thesis_prior.sig_l_reference,
+                    "thickness_nm": thesis_prior.thickness_reference_nm,
+                },
+                "bounds": {
+                    "rave_nm": {
+                        "min": thesis_prior.rave_min_nm,
+                        "max": thesis_prior.rave_max_nm,
+                    },
+                    "sig_l": {
+                        "min": thesis_prior.sig_l_min,
+                        "max": thesis_prior.sig_l_max,
+                    },
+                    "thickness_nm": {
+                        "min": thesis_prior.thickness_min_nm,
+                        "max": thesis_prior.thickness_max_nm,
+                    },
+                },
+            }
+            result_path.write_text(json.dumps(result_raw, indent=2) + "\n", encoding="utf-8")
         write_gnuplot_script(
             path=gnuplot_path,
             image_path=image_path,
