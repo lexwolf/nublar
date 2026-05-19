@@ -256,6 +256,10 @@ def build_report(
             f"  max hAg relative spread: {format_percent(float(row['h_ag_rel_spread_max']))}"
         )
         lines.append(
+            "  max thickness relative spread: "
+            f"{format_percent(float(row['thickness_rel_spread_max']))}"
+        )
+        lines.append(
             f"  max rave relative spread: {format_percent(float(row['rave_rel_spread_max']))}"
         )
         lines.append(
