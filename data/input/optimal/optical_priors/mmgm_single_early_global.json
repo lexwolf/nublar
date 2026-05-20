@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "source": {
+    "input_file": "trusted early MMGM free-branch guidance",
+    "source_file": "trusted early MMGM free-branch guidance",
+    "model": "mmgm_single",
+    "distribution": "single_lognormal",
+    "columns": [
+      "time_s",
+      "effe",
+      "thickness_nm",
+      "Rave_nm",
+      "sigL"
+    ],
+    "included_times_s": [
+      10,
+      20
+    ],
+    "excluded_times_s": [
+      30,
+      40,
+      50,
+      60
+    ]
+  },
+  "strategy": {
+    "name": "mmgm_early_bounded",
+    "description": "bounded early-regime MMGM morphology guidance; effe remains free",
+    "sig_l_absolute_min": 0.08,
+    "sig_l_absolute_max": 1.0,
+    "parameter_bounds": {
+      "10": {
+        "rave_nm": [
+          12.8,
+          19.2
+        ],
+        "sig_l": [
+          0.52,
+          0.78
+        ],
+        "thickness_nm": [
+          4.5,
+          7.0
+        ]
+      },
+      "20": {
+        "rave_nm": [
+          14.8,
+          22.2
+        ],
+        "sig_l": [
+          0.48,
+          0.68
+        ],
+        "thickness_nm": [
+          4.5,
+          7.0
+        ]
+      }
+    }
+  },
+  "bounds_by_time_s": {
+    "10": {
+      "time_s": 10,
+      "reference_values": {
+        "effe": 0.2,
+        "rave_nm": 16.0,
+        "sig_l": 0.66,
+        "thickness_nm": 5.5
+      },
+      "bounds": {
+        "rave_nm": {
+          "min": 12.8,
+          "max": 19.2
+        },
+        "sig_l": {
+          "min": 0.52,
+          "max": 0.78
+        },
+        "thickness_nm": {
+          "min": 4.5,
+          "max": 7.0
+        }
+      },
+      "rave_nm": {
+        "min": 12.8,
+        "max": 19.2,
+        "reference": 16.0
+      },
+      "sig_l": {
+        "min": 0.52,
+        "max": 0.78,
+        "reference": 0.66
+      },
+      "thickness_nm": {
+        "min": 4.5,
+        "max": 7.0,
+        "reference": 5.5
+      }
+    },
+    "20": {
+      "time_s": 20,
+      "reference_values": {
+        "effe": 0.28,
+        "rave_nm": 18.5,
+        "sig_l": 0.58,
+        "thickness_nm": 5.5
+      },
+      "bounds": {
+        "rave_nm": {
+          "min": 14.8,
+          "max": 22.2
+        },
+        "sig_l": {
+          "min": 0.48,
+          "max": 0.68
+        },
+        "thickness_nm": {
+          "min": 4.5,
+          "max": 7.0
+        }
+      },
+      "rave_nm": {
+        "min": 14.8,
+        "max": 22.2,
+        "reference": 18.5
+      },
+      "sig_l": {
+        "min": 0.48,
+        "max": 0.68,
+        "reference": 0.58
+      },
+      "thickness_nm": {
+        "min": 4.5,
+        "max": 7.0,
+        "reference": 5.5
+      }
+    }
+  }
+}
