@@ -38,6 +38,8 @@ HAG_LINEARITY_MODES = {"none", "soft", "hard"}
 DEFAULT_HAG_LINEARITY_MODE = "none"
 DEFAULT_HAG_LINEARITY_WEIGHT = 1.0
 DEFAULT_HAG_LINEARITY_TOLERANCE = 0.15
+HAG_WINDOW_MODES = {"none", "bounded"}
+DEFAULT_HAG_WINDOW_MODE = "none"
 
 
 class OptimizerError(RuntimeError):
@@ -172,6 +174,17 @@ class HagLinearFit:
     r2: float
     max_relative_deviation: float
     penalty: float
+
+
+@dataclass(frozen=True)
+class HagWindowConstraint:
+    mode: str = DEFAULT_HAG_WINDOW_MODE
+    min_nm: float | None = None
+    max_nm: float | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "bounded"
 
 
 @dataclass(frozen=True)
@@ -329,6 +342,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_HAG_LINEARITY_TOLERANCE,
         help="Relative hAg deviation tolerance for hard linearity mode.",
+    )
+    parser.add_argument(
+        "--hag-window-mode",
+        choices=sorted(HAG_WINDOW_MODES),
+        default=DEFAULT_HAG_WINDOW_MODE,
+        help="Constrain hAg=effe*thickness_nm to a bounded physical window.",
+    )
+    parser.add_argument(
+        "--hag-window-min-nm",
+        type=float,
+        default=None,
+        help="Minimum allowed hAg in nm when --hag-window-mode bounded is active.",
+    )
+    parser.add_argument(
+        "--hag-window-max-nm",
+        type=float,
+        default=None,
+        help="Maximum allowed hAg in nm when --hag-window-mode bounded is active.",
     )
     return parser.parse_args()
 
@@ -1337,6 +1368,20 @@ def violates_monotonic_h_ag(parameters: Sequence[Sequence[float]]) -> bool:
     return any(left > right for left, right in zip(values, values[1:], strict=False))
 
 
+def violates_hag_window(
+    parameters: Sequence[Sequence[float]],
+    constraint: HagWindowConstraint,
+) -> bool:
+    if not constraint.enabled:
+        return False
+    if constraint.min_nm is None or constraint.max_nm is None:
+        raise OptimizerError("Bounded hAg window requires min_nm and max_nm")
+    return any(
+        h_ag_nm < constraint.min_nm or h_ag_nm > constraint.max_nm
+        for h_ag_nm in h_ag_values(parameters)
+    )
+
+
 def fit_hag_linearity(times_s: Sequence[int], h_ag_nm: Sequence[float]) -> HagLinearFit:
     if len(times_s) != len(h_ag_nm):
         raise OptimizerError("hAg linearity fit requires matching time and hAg lengths")
@@ -1510,6 +1555,7 @@ def feasible_initial_population(
     afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
     afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
     thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+    hag_window_constraint: HagWindowConstraint = HagWindowConstraint(),
 ) -> list[list[float]]:
     rng = random.Random(bounds.seed)
     afm_priors_enabled = afm_priors_by_time_s is not None
@@ -1548,7 +1594,7 @@ def feasible_initial_population(
             raise OptimizerError(
                 "Thesis priors require one spectrum time per initial-population spectrum"
             )
-    population: list[list[float]] = [[0.5] * (parameters_per_spectrum * n_spectra)]
+    population: list[list[float]] = []
     while len(population) < population_count:
         candidate_parameters: list[tuple[float, list[float]]] = []
         attempts = 0
@@ -1582,6 +1628,17 @@ def feasible_initial_population(
             else:
                 thickness_nm = thickness_from_unit_value(bounds, thickness_unit)
                 unit_values = [effe_unit, thickness_unit]
+            h_ag_nm = effe * thickness_nm
+            if (
+                hag_window_constraint.enabled
+                and (
+                    hag_window_constraint.min_nm is None
+                    or hag_window_constraint.max_nm is None
+                    or h_ag_nm < hag_window_constraint.min_nm
+                    or h_ag_nm > hag_window_constraint.max_nm
+                )
+            ):
+                continue
             if (
                 model_name in MMGM_SINGLE_MODELS
                 and parameters_per_spectrum == 4
@@ -1610,7 +1667,7 @@ def feasible_initial_population(
                     if violates_thickness_tail_constraint(thickness_nm, rave_nm, sig_l, bounds):
                         continue
                     unit_values.extend([rave_unit, sig_l_unit])
-            candidate_parameters.append((effe * thickness_nm, unit_values))
+            candidate_parameters.append((h_ag_nm, unit_values))
         candidate = []
         candidate_violates_tail_constraint = False
         ordered_parameters = sorted(candidate_parameters, key=lambda item: item[0])
@@ -1796,6 +1853,7 @@ def optimize_global(
     hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
     hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
     hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
+    hag_window_constraint: HagWindowConstraint = HagWindowConstraint(),
 ) -> GlobalFit:
     best: GlobalFit | None = None
     afm_priors_enabled = afm_priors_by_time_s is not None
@@ -1837,6 +1895,8 @@ def optimize_global(
                 return VERY_LARGE_SSE
         else:
             parameters = parameters_from_unit_vector(unit_values, bounds)
+        if violates_hag_window(parameters, hag_window_constraint):
+            return VERY_LARGE_SSE
         if violates_monotonic_h_ag(parameters):
             return VERY_LARGE_SSE
         hag_linear_fit = fit_hag_linearity(
@@ -1949,6 +2009,7 @@ def optimize_global(
         afm_thickness_scale_low=afm_thickness_scale_low,
         afm_thickness_scale_high=afm_thickness_scale_high,
         thesis_priors_mode=thesis_priors_mode,
+        hag_window_constraint=hag_window_constraint,
     )
     differential_evolution(
         lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
@@ -2147,6 +2208,7 @@ def write_global_summary_json(
     hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
     hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
     hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
+    hag_window_constraint: HagWindowConstraint = HagWindowConstraint(),
     excluded_times_s: Sequence[int] = (),
 ) -> None:
     result = {
@@ -2177,6 +2239,13 @@ def write_global_summary_json(
         "hag_linearity_mode": hag_linearity_mode,
         "hag_linearity_weight": hag_linearity_weight,
         "hag_linearity_tolerance": hag_linearity_tolerance,
+        "hag_window_constraint": {
+            "mode": hag_window_constraint.mode,
+            "quantity": "h_ag_nm = effe * thickness_nm",
+            "min_nm": hag_window_constraint.min_nm,
+            "max_nm": hag_window_constraint.max_nm,
+            "enforced": hag_window_constraint.enabled,
+        },
     }
     if global_fit.hag_linear_fit is not None:
         result["hag_linear_fit"] = {
@@ -2278,6 +2347,9 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
     hag_linearity_mode = str(args.hag_linearity_mode)
     hag_linearity_weight = float(args.hag_linearity_weight)
     hag_linearity_tolerance = float(args.hag_linearity_tolerance)
+    hag_window_mode = str(args.hag_window_mode)
+    hag_window_min_nm = args.hag_window_min_nm
+    hag_window_max_nm = args.hag_window_max_nm
     if afm_priors_mode not in AFM_PRIOR_MODES:
         raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
     if afm_sigl_mode not in AFM_SIGL_MODES:
@@ -2296,6 +2368,29 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         raise OptimizerError("--hag-linearity-weight must be non-negative")
     if hag_linearity_tolerance <= 0.0:
         raise OptimizerError("--hag-linearity-tolerance must be positive")
+    if hag_window_mode not in HAG_WINDOW_MODES:
+        raise OptimizerError(f"Invalid hAg window mode: {hag_window_mode}")
+    if hag_window_mode == "bounded":
+        if hag_window_min_nm is None or hag_window_max_nm is None:
+            raise OptimizerError(
+                "--hag-window-mode bounded requires --hag-window-min-nm and --hag-window-max-nm"
+            )
+        hag_window_min_nm = float(hag_window_min_nm)
+        hag_window_max_nm = float(hag_window_max_nm)
+        if hag_window_min_nm < 0.0:
+            raise OptimizerError("--hag-window-min-nm must be non-negative")
+        if hag_window_max_nm <= hag_window_min_nm:
+            raise OptimizerError("--hag-window-max-nm must be greater than --hag-window-min-nm")
+    else:
+        if hag_window_min_nm is not None or hag_window_max_nm is not None:
+            raise OptimizerError(
+                "--hag-window-min-nm/--hag-window-max-nm require --hag-window-mode bounded"
+            )
+    hag_window_constraint = HagWindowConstraint(
+        mode=hag_window_mode,
+        min_nm=float(hag_window_min_nm) if hag_window_min_nm is not None else None,
+        max_nm=float(hag_window_max_nm) if hag_window_max_nm is not None else None,
+    )
     if afm_priors_mode == "fixed" and args.afm_priors_json is None:
         raise OptimizerError("--afm-priors-mode fixed requires --afm-priors-json")
     if afm_priors_mode == "bounded" and afm_sigl_mode == "fixed" and args.afm_priors_json is None:
@@ -2419,7 +2514,13 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         f"  excluded times: {', '.join(str(time_s) for time_s in sorted(exclude_times)) if exclude_times else 'none'}\n"
         "  constraint: hAg monotonic increasing\n"
         f"  hAg linearity mode: {hag_linearity_mode}\n"
-        f"  optimizer: {optimizer_label}",
+        f"  hAg window mode: {hag_window_constraint.mode}"
+        + (
+            f" [{hag_window_constraint.min_nm:g}, {hag_window_constraint.max_nm:g}] nm\n"
+            if hag_window_constraint.enabled
+            else "\n"
+        )
+        + f"  optimizer: {optimizer_label}",
         flush=True,
     )
     if afm_prior_config is not None:
@@ -2468,6 +2569,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         hag_linearity_mode=hag_linearity_mode,
         hag_linearity_weight=hag_linearity_weight,
         hag_linearity_tolerance=hag_linearity_tolerance,
+        hag_window_constraint=hag_window_constraint,
     )
 
     for fit in global_fit.spectra:
@@ -2531,6 +2633,7 @@ def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelect
         hag_linearity_mode=hag_linearity_mode,
         hag_linearity_weight=hag_linearity_weight,
         hag_linearity_tolerance=hag_linearity_tolerance,
+        hag_window_constraint=hag_window_constraint,
         excluded_times_s=sorted(exclude_times),
     )
     print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")

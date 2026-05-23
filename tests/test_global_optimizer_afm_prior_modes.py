@@ -14,11 +14,14 @@ if str(OPTIMAL_DIR) not in sys.path:
 from optimize_global_model_parameters import (  # noqa: E402
     AfmParameterPrior,
     FitWindow,
+    HagWindowConstraint,
     ModelBounds,
     OptimizerError,
+    feasible_initial_population,
     mmgm_single_global_parameters_from_unit_vector,
     parameter_count_for_model,
     read_afm_prior_config,
+    violates_hag_window,
 )
 
 
@@ -202,6 +205,35 @@ def test_parameter_count_depends_on_afm_prior_mode() -> None:
         == 2
     )
     assert parameter_count_for_model("mg", afm_priors_enabled=False) == 2
+
+
+def test_hag_window_detects_out_of_window_parameters() -> None:
+    constraint = HagWindowConstraint(mode="bounded", min_nm=1.0, max_nm=3.0)
+
+    assert not violates_hag_window([(0.2, 6.0), (0.1, 25.0)], constraint)
+    assert violates_hag_window([(0.2, 4.0), (0.1, 25.0)], constraint)
+    assert violates_hag_window([(0.2, 6.0), (0.2, 20.0)], constraint)
+
+
+def test_feasible_initial_population_honors_hag_window() -> None:
+    constraint = HagWindowConstraint(mode="bounded", min_nm=1.0, max_nm=3.0)
+
+    population = feasible_initial_population(
+        model_name="mmgm_spheres_single",
+        n_spectra=2,
+        bounds=minimal_bounds(),
+        population_count=6,
+        hag_window_constraint=constraint,
+    )
+
+    assert len(population) == 6
+    for unit_values in population:
+        parameters = mmgm_single_global_parameters_from_unit_vector(
+            unit_values,
+            minimal_bounds(),
+            n_spectra=2,
+        )
+        assert not violates_hag_window(parameters, constraint)
 
 
 def afm_prior_json() -> dict[str, object]:
