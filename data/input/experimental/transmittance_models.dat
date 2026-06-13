@@ -1,0 +1,7 @@
+# time_s sample_label model_json experimental_dat calculated_dat experimental_lamin_nm experimental_lamax_nm
+10 ITO_Ag_10s_T data/input/experimental/transmittance_models/10s.json data/experimental/final/transmittance/ITO_Ag_10s_T_0.dat data/output/transmittance/silver_nanoisland_10s.dat 300 798
+20 ITO_Ag_20s_T data/input/experimental/transmittance_models/20s.json data/experimental/final/transmittance/ITO_Ag_20s_T_0.dat data/output/transmittance/silver_nanoisland_20s.dat 300 798
+30 ITO_Ag_30s_T data/input/experimental/transmittance_models/30s.json data/experimental/final/transmittance/ITO_Ag_30s_T_0.dat data/output/transmittance/silver_nanoisland_30s.dat 300 798
+40 ITO_Ag_40s_T data/input/experimental/transmittance_models/40s.json data/experimental/final/transmittance/ITO_Ag_40s_T_0.dat data/output/transmittance/silver_nanoisland_40s.dat 300 798
+50 ITO_Ag_50s_T data/input/experimental/transmittance_models/50s.json data/experimental/final/transmittance/ITO_Ag_50s_T_0.dat data/output/transmittance/silver_nanoisland_50s.dat 300 798
+60 ITO_Ag_60s data/input/experimental/transmittance_models/60s.json data/experimental/final/transmittance/ITO_Ag_60s_T_0.dat data/output/transmittance/silver_nanoisland_60s.dat 200 848

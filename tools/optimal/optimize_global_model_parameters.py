@@ -1,0 +1,2659 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+from typing import Any, Protocol, Sequence, cast
+
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+
+from model import bruggeman_lib, mg_lib, mmgm_single_lib  # noqa: E402
+
+VERY_LARGE_SSE = 1.0e99
+LOGNORMAL_P95_Z = 1.6448536269514722
+LOGNORMAL_P99_Z = 2.3263478740408408
+MMGM_SINGLE_MODELS = {"mmgm_spheres_single", "mmgm_holes_single"}
+AFM_PRIOR_MODES = {"bounded", "fixed"}
+DEFAULT_AFM_PRIORS_MODE = "bounded"
+AFM_SIGL_MODES = {"bounded", "fixed"}
+DEFAULT_AFM_SIGL_MODE = "bounded"
+AFM_THICKNESS_PRIOR_MODES = {"none", "bounded"}
+DEFAULT_AFM_THICKNESS_PRIOR_MODE = "none"
+DEFAULT_AFM_THICKNESS_SCALE_LOW = 0.5
+DEFAULT_AFM_THICKNESS_SCALE_HIGH = 2.0
+THESIS_PRIOR_MODES = {"bounded", "fixed"}
+DEFAULT_THESIS_PRIORS_MODE = "bounded"
+HAG_LINEARITY_MODES = {"none", "soft", "hard"}
+DEFAULT_HAG_LINEARITY_MODE = "none"
+DEFAULT_HAG_LINEARITY_WEIGHT = 1.0
+DEFAULT_HAG_LINEARITY_TOLERANCE = 0.15
+HAG_WINDOW_MODES = {"none", "bounded"}
+DEFAULT_HAG_WINDOW_MODE = "none"
+
+
+class OptimizerError(RuntimeError):
+    """Raised when the global optimizer orchestration fails."""
+
+
+@dataclass(frozen=True)
+class PlotWindow:
+    min_nm: float
+    max_nm: float
+
+
+@dataclass(frozen=True)
+class OutputPaths:
+    output_dir: Path
+    gnuplot_dir: Path
+    image_dir: Path
+    tmp_dir: Path
+
+
+@dataclass(frozen=True)
+class Spectrum:
+    path: Path
+    wavelengths_nm: list[float]
+    transmittance: list[float]
+
+    @property
+    def basename(self) -> str:
+        return self.path.stem
+
+    @property
+    def grid(self) -> tuple[float, float, float, int]:
+        if len(self.wavelengths_nm) < 2:
+            raise OptimizerError(f"Spectrum has too few points: {self.path}")
+        return (
+            self.wavelengths_nm[0],
+            self.wavelengths_nm[-1],
+            self.wavelengths_nm[1] - self.wavelengths_nm[0],
+            len(self.wavelengths_nm),
+        )
+
+
+@dataclass(frozen=True)
+class TimedSpectrum:
+    time_s: int
+    spectrum: Spectrum
+
+
+@dataclass(frozen=True)
+class FitWindow:
+    min_nm: float
+    max_nm: float
+
+
+@dataclass(frozen=True)
+class ThicknessTailConstraint:
+    enabled: bool = False
+    percentile: float = 0.95
+    factor: float = 2.0
+    mode: str = "reject"
+
+
+@dataclass(frozen=True)
+class ModelBounds:
+    effe_min: float
+    effe_max: float
+    thickness_min_nm: float
+    thickness_max_nm: float
+    thickness_transform: str
+    fit_window: FitWindow
+    rave_min_nm: float | None = None
+    rave_max_nm: float | None = None
+    rave_transform: str = "none"
+    sig_l_min: float | None = None
+    sig_l_max: float | None = None
+    sig_l_transform: str = "none"
+    population_size: int = 24
+    max_generations: int = 80
+    seed: int = 12345
+    thickness_tail_constraint: ThicknessTailConstraint = ThicknessTailConstraint()
+
+
+@dataclass(frozen=True)
+class AfmParameterPrior:
+    time_s: int
+    rave_min_nm: float
+    rave_max_nm: float
+    rave_reference_nm: float
+    sig_l_min: float
+    sig_l_max: float
+    sig_l_reference: float
+    thickness_min_nm: float | None = None
+    thickness_max_nm: float | None = None
+    thickness_reference_nm: float | None = None
+
+
+@dataclass(frozen=True)
+class AfmPriorConfig:
+    path: Path
+    source: dict[str, Any]
+    strategy: dict[str, Any]
+    priors_by_time_s: dict[int, AfmParameterPrior]
+
+
+@dataclass(frozen=True)
+class ThesisPriorConfig:
+    path: Path
+    source: dict[str, Any]
+    strategy: dict[str, Any]
+    priors_by_time_s: dict[int, AfmParameterPrior]
+
+
+@dataclass(frozen=True)
+class SpectrumFit:
+    time_s: int
+    experimental: Spectrum
+    theoretical_path: Path
+    effe: float
+    thickness_nm: float
+    h_ag_nm: float
+    sse: float
+    objective_points: int
+    invalid_points: int
+    rave_nm: float | None = None
+    sig_l: float | None = None
+
+
+@dataclass(frozen=True)
+class HagLinearFit:
+    slope: float
+    intercept: float
+    r2: float
+    max_relative_deviation: float
+    penalty: float
+
+
+@dataclass(frozen=True)
+class HagWindowConstraint:
+    mode: str = DEFAULT_HAG_WINDOW_MODE
+    min_nm: float | None = None
+    max_nm: float | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "bounded"
+
+
+@dataclass(frozen=True)
+class GlobalFit:
+    total_sse: float
+    spectra: list[SpectrumFit]
+    objective_value: float
+    hag_linear_fit: HagLinearFit | None = None
+
+    @property
+    def total_finite_points(self) -> int:
+        return sum(fit.objective_points for fit in self.spectra)
+
+
+@dataclass(frozen=True)
+class ModelSelection:
+    model: str
+    geometry: str
+
+
+class ModelLib(Protocol):
+    @property
+    def MODEL_NAME(self) -> str: ...
+
+    @property
+    def DISPLAY_NAME(self) -> str: ...
+
+    def configure_effective_medium(
+        self,
+        effective_medium: dict[str, Any],
+        *,
+        geometry: str,
+        effe: float,
+        rave_nm: float | None = None,
+        sig_l: float | None = None,
+    ) -> None: ...
+
+
+MODEL_LIBS: dict[str, ModelLib] = {
+    mg_lib.MODEL_NAME: mg_lib,
+    bruggeman_lib.MODEL_NAME: bruggeman_lib,
+    "mmgm_spheres_single": mmgm_single_lib,
+    "mmgm_holes_single": mmgm_single_lib,
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Globally optimize Nublar transmittance model parameters with a "
+            "monotonic silver-volume constraint."
+        )
+    )
+    model_group = parser.add_mutually_exclusive_group(required=True)
+    model_group.add_argument("--mg-spheres", action="store_true")
+    model_group.add_argument("--mg-holes", action="store_true")
+    model_group.add_argument("--bruggeman-spheres", action="store_true")
+    model_group.add_argument("--bruggeman-holes", action="store_true")
+    model_group.add_argument("--mmgm-spheres-single", action="store_true")
+    model_group.add_argument("--mmgm-holes-single", action="store_true")
+    parser.add_argument("--template-json", type=Path, default=Path("data/input/sample.json"))
+    parser.add_argument("--bounds-json", type=Path, default=Path("data/input/optimal/bounds.json"))
+    parser.add_argument("--spectra-dir", type=Path, default=Path("data/experimental/final/transmittance"))
+    parser.add_argument("--transmittance-exe", type=Path, default=Path("bin/transmittance"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/output/optimal_global"))
+    parser.add_argument("--gnuplot-dir", type=Path, default=Path("scripts/gnuplot/optimal_global"))
+    parser.add_argument("--image-dir", type=Path, default=Path("img/optimal_global"))
+    parser.add_argument("--tmp-dir", type=Path, default=None)
+    parser.add_argument(
+        "--afm-priors-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional AFM-derived prior bounds JSON. Supported only for "
+            "mmgm_spheres_single and mmgm_holes_single."
+        ),
+    )
+    parser.add_argument(
+        "--afm-priors-mode",
+        choices=sorted(AFM_PRIOR_MODES),
+        default=DEFAULT_AFM_PRIORS_MODE,
+        help=(
+            "How to use AFM priors: 'bounded' keeps Rave and sig_l fitted within "
+            "AFM bounds; 'fixed' uses AFM reference values directly."
+        ),
+    )
+    parser.add_argument(
+        "--afm-thickness-prior",
+        choices=sorted(AFM_THICKNESS_PRIOR_MODES),
+        default=DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+        help="Use AFM-derived thickness bounds when available.",
+    )
+    parser.add_argument(
+        "--afm-sigl-mode",
+        choices=sorted(AFM_SIGL_MODES),
+        default=DEFAULT_AFM_SIGL_MODE,
+        help=(
+            "How to use AFM sigL in bounded AFM mode: 'bounded' fits sigL within "
+            "AFM bounds; 'fixed' uses AFM reference sigL."
+        ),
+    )
+    parser.add_argument(
+        "--afm-thickness-scale-low",
+        type=float,
+        default=DEFAULT_AFM_THICKNESS_SCALE_LOW,
+        help="Lower multiplier for AFM thickness reference when thickness prior is bounded.",
+    )
+    parser.add_argument(
+        "--afm-thickness-scale-high",
+        type=float,
+        default=DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+        help="Upper multiplier for AFM thickness reference when thickness prior is bounded.",
+    )
+    parser.add_argument(
+        "--thesis-priors-json",
+        type=Path,
+        default=None,
+        help=(
+            "Optional thesis-derived Rave/sigL/thickness prior bounds JSON. "
+            "Supported only for mmgm_spheres_single and mmgm_holes_single."
+        ),
+    )
+    parser.add_argument(
+        "--thesis-priors-mode",
+        choices=sorted(THESIS_PRIOR_MODES),
+        default=DEFAULT_THESIS_PRIORS_MODE,
+        help=(
+            "How to use thesis priors: 'bounded' fits Rave, sig_l, and thickness "
+            "within thesis bounds; 'fixed' uses all thesis morphology values directly."
+        ),
+    )
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--max-generations", type=int, default=None)
+    parser.add_argument("--population-size", type=int, default=None)
+    parser.add_argument(
+        "--exclude-times",
+        type=str,
+        default="",
+        help="Comma-separated deposition times in seconds to exclude, e.g. '40' or '20,40'.",
+    )
+    parser.add_argument(
+        "--hag-linearity-mode",
+        choices=sorted(HAG_LINEARITY_MODES),
+        default=DEFAULT_HAG_LINEARITY_MODE,
+        help="Regularize hAg(t)=effe(t)*thickness_nm(t) against a fitted linear trend.",
+    )
+    parser.add_argument(
+        "--hag-linearity-weight",
+        type=float,
+        default=DEFAULT_HAG_LINEARITY_WEIGHT,
+        help="Dimensionless weight for soft hAg linearity regularization.",
+    )
+    parser.add_argument(
+        "--hag-linearity-tolerance",
+        type=float,
+        default=DEFAULT_HAG_LINEARITY_TOLERANCE,
+        help="Relative hAg deviation tolerance for hard linearity mode.",
+    )
+    parser.add_argument(
+        "--hag-window-mode",
+        choices=sorted(HAG_WINDOW_MODES),
+        default=DEFAULT_HAG_WINDOW_MODE,
+        help="Constrain hAg=effe*thickness_nm to a bounded physical window.",
+    )
+    parser.add_argument(
+        "--hag-window-min-nm",
+        type=float,
+        default=None,
+        help="Minimum allowed hAg in nm when --hag-window-mode bounded is active.",
+    )
+    parser.add_argument(
+        "--hag-window-max-nm",
+        type=float,
+        default=None,
+        help="Maximum allowed hAg in nm when --hag-window-mode bounded is active.",
+    )
+    return parser.parse_args()
+
+
+def parse_exclude_times(raw: str) -> set[int]:
+    if not raw.strip():
+        return set()
+    values: set[int] = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.add(int(item))
+        except ValueError as exc:
+            raise OptimizerError(f"Invalid excluded time: {item!r}") from exc
+    return values
+
+
+def selected_model(args: argparse.Namespace) -> ModelSelection:
+    if args.mg_spheres:
+        return ModelSelection(model="mg", geometry="spheres")
+    if args.mg_holes:
+        return ModelSelection(model="mg", geometry="holes")
+    if args.bruggeman_spheres:
+        return ModelSelection(model="bruggeman", geometry="spheres")
+    if args.bruggeman_holes:
+        return ModelSelection(model="bruggeman", geometry="holes")
+    if args.mmgm_spheres_single:
+        return ModelSelection(model="mmgm_spheres_single", geometry="spheres")
+    if args.mmgm_holes_single:
+        return ModelSelection(model="mmgm_holes_single", geometry="holes")
+    raise OptimizerError("No supported model selected")
+
+
+def model_lib(selection: ModelSelection) -> ModelLib:
+    try:
+        return MODEL_LIBS[selection.model]
+    except KeyError as exc:
+        raise OptimizerError(f"No model library registered for {selection.model}") from exc
+
+
+def output_paths(args: argparse.Namespace, selection: ModelSelection, model: ModelLib) -> OutputPaths:
+    output_dir = args.output_dir / model.MODEL_NAME / selection.geometry
+    return OutputPaths(
+        output_dir=output_dir,
+        gnuplot_dir=args.gnuplot_dir / model.MODEL_NAME / selection.geometry,
+        image_dir=args.image_dir / model.MODEL_NAME / selection.geometry,
+        tmp_dir=(
+            args.tmp_dir / model.MODEL_NAME / selection.geometry / "tmp"
+            if args.tmp_dir
+            else output_dir / "tmp"
+        ),
+    )
+
+
+def _strip_markdown_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def read_thickness_tail_constraint(model: dict[str, Any]) -> ThicknessTailConstraint:
+    raw = model.get("constraints", {}).get("thickness_tail", {})
+    if not raw:
+        return ThicknessTailConstraint()
+
+    constraint = ThicknessTailConstraint(
+        enabled=bool(raw.get("enabled", False)),
+        percentile=float(raw.get("percentile", 0.95)),
+        factor=float(raw.get("factor", 2.0)),
+        mode=str(raw.get("mode", "reject")),
+    )
+    if constraint.percentile not in {0.95, 0.99}:
+        raise OptimizerError(
+            "Invalid thickness_tail percentile: "
+            f"{constraint.percentile}. Supported values are 0.95 and 0.99."
+        )
+    if constraint.factor <= 0.0:
+        raise OptimizerError(
+            f"Invalid thickness_tail factor: {constraint.factor}. Must be positive."
+        )
+    if constraint.mode != "reject":
+        raise OptimizerError(
+            f"Invalid thickness_tail mode: {constraint.mode}. Only 'reject' is supported."
+        )
+    return constraint
+
+
+def read_bounds(path: Path, model_name: str) -> ModelBounds:
+    raw = json.loads(_strip_markdown_fence(path.read_text(encoding="utf-8")))
+    objective = raw["global"]["objective"]
+    fit_window_raw = objective["fit_window_nm"]
+    model = raw["models"][model_name]
+    params = model["native_fit_parameters"]
+    differential_evolution = model.get("optimizer", {}).get("differential_evolution", {})
+    fit_window = FitWindow(
+        min_nm=float(fit_window_raw["min"]),
+        max_nm=float(fit_window_raw["max"]),
+    )
+    if fit_window.min_nm > fit_window.max_nm:
+        raise OptimizerError(
+            "Invalid objective fit window: "
+            f"{fit_window.min_nm} > {fit_window.max_nm}"
+        )
+    return ModelBounds(
+        effe_min=float(params["effe"]["min"]),
+        effe_max=float(params["effe"]["max"]),
+        thickness_min_nm=float(params["thickness_nm"]["min"]),
+        thickness_max_nm=float(params["thickness_nm"]["max"]),
+        thickness_transform=str(params["thickness_nm"].get("transform", "log")),
+        fit_window=fit_window,
+        rave_min_nm=(
+            float(params["rave_nm"]["min"]) if params.get("rave_nm") else None
+        ),
+        rave_max_nm=(
+            float(params["rave_nm"]["max"]) if params.get("rave_nm") else None
+        ),
+        rave_transform=(
+            str(params["rave_nm"].get("transform", "none"))
+            if params.get("rave_nm")
+            else "none"
+        ),
+        sig_l_min=(float(params["sig_l"]["min"]) if params.get("sig_l") else None),
+        sig_l_max=(float(params["sig_l"]["max"]) if params.get("sig_l") else None),
+        sig_l_transform=(
+            str(params["sig_l"].get("transform", "none"))
+            if params.get("sig_l")
+            else "none"
+        ),
+        population_size=int(differential_evolution.get("population_size", 24)),
+        max_generations=int(differential_evolution.get("max_generations", 80)),
+        seed=int(differential_evolution.get("seed", 12345)),
+        thickness_tail_constraint=read_thickness_tail_constraint(model),
+    )
+
+
+def require_finite_number(value: Any, field_path: str, time_s: int | None = None) -> float:
+    context = f" for time_s={time_s}" if time_s is not None else ""
+    if isinstance(value, bool):
+        raise OptimizerError(f"AFM prior field {field_path}{context} must be numeric")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise OptimizerError(
+            f"AFM prior field {field_path}{context} must be numeric"
+        ) from exc
+    if not math.isfinite(parsed):
+        raise OptimizerError(f"AFM prior field {field_path}{context} must be finite")
+    return parsed
+
+
+def require_nested_mapping(
+    raw: dict[str, Any],
+    key: str,
+    field_path: str,
+    time_s: int | None = None,
+) -> dict[str, Any]:
+    context = f" for time_s={time_s}" if time_s is not None else ""
+    value = raw.get(key)
+    if not isinstance(value, dict):
+        raise OptimizerError(f"AFM prior field {field_path}{context} must be an object")
+    return value
+
+
+def read_afm_prior_config(path: Path) -> AfmPriorConfig:
+    if not path.exists():
+        raise OptimizerError(f"AFM priors JSON does not exist: {path}")
+    if not path.is_file():
+        raise OptimizerError(f"AFM priors JSON is not a file: {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OptimizerError(f"Could not parse AFM priors JSON {path}: {exc}") from exc
+
+    if raw.get("schema_version") != 1:
+        raise OptimizerError("AFM priors JSON schema_version must be 1")
+
+    source = require_nested_mapping(raw, "source", "source")
+    if source.get("model") != "mmgm_single":
+        raise OptimizerError("AFM priors source.model must be 'mmgm_single'")
+    if source.get("distribution") != "single_lognormal":
+        raise OptimizerError(
+            "AFM priors source.distribution must be 'single_lognormal'"
+        )
+
+    strategy = raw.get("strategy", {})
+    if not isinstance(strategy, dict):
+        raise OptimizerError("AFM priors field strategy must be an object")
+
+    bounds_by_time = raw.get("bounds_by_time_s")
+    if not isinstance(bounds_by_time, dict) or not bounds_by_time:
+        raise OptimizerError("AFM priors bounds_by_time_s must be a non-empty object")
+
+    priors: dict[int, AfmParameterPrior] = {}
+    for raw_time_s, entry in bounds_by_time.items():
+        try:
+            time_s = int(raw_time_s)
+        except (TypeError, ValueError) as exc:
+            raise OptimizerError(
+                f"AFM priors time key must parse to an integer: {raw_time_s!r}"
+            ) from exc
+        if str(time_s) != str(raw_time_s):
+            raise OptimizerError(
+                f"AFM priors time key must be a base-10 integer string: {raw_time_s!r}"
+            )
+        if time_s in priors:
+            raise OptimizerError(f"Duplicate AFM prior time_s: {time_s}")
+        if not isinstance(entry, dict):
+            raise OptimizerError(f"AFM prior entry for time_s={time_s} must be an object")
+
+        rave = require_nested_mapping(entry, "rave_nm", "rave_nm", time_s)
+        sig_l = require_nested_mapping(entry, "sig_l", "sig_l", time_s)
+        rave_min = require_finite_number(rave.get("min"), "rave_nm.min", time_s)
+        rave_max = require_finite_number(rave.get("max"), "rave_nm.max", time_s)
+        rave_reference = require_finite_number(
+            rave.get("reference"),
+            "rave_nm.reference",
+            time_s,
+        )
+        sig_l_min = require_finite_number(sig_l.get("min"), "sig_l.min", time_s)
+        sig_l_max = require_finite_number(sig_l.get("max"), "sig_l.max", time_s)
+        sig_l_reference = require_finite_number(
+            sig_l.get("reference"),
+            "sig_l.reference",
+            time_s,
+        )
+        thickness_min: float | None = None
+        thickness_max: float | None = None
+        thickness_reference: float | None = None
+        thickness = entry.get("thickness_nm")
+        if thickness is not None:
+            if not isinstance(thickness, dict):
+                raise OptimizerError(
+                    f"AFM prior field thickness_nm for time_s={time_s} must be an object"
+                )
+            thickness_min = require_finite_number(
+                thickness.get("min"),
+                "thickness_nm.min",
+                time_s,
+            )
+            thickness_max = require_finite_number(
+                thickness.get("max"),
+                "thickness_nm.max",
+                time_s,
+            )
+            thickness_reference = require_finite_number(
+                thickness.get("reference"),
+                "thickness_nm.reference",
+                time_s,
+            )
+
+        if rave_min <= 0.0:
+            raise OptimizerError(f"AFM prior rave_nm.min must be > 0 for time_s={time_s}")
+        if rave_min >= rave_max:
+            raise OptimizerError(
+                f"AFM prior rave_nm.min must be < rave_nm.max for time_s={time_s}"
+            )
+        if sig_l_min < 0.0:
+            raise OptimizerError(f"AFM prior sig_l.min must be >= 0 for time_s={time_s}")
+        if sig_l_min >= sig_l_max:
+            raise OptimizerError(
+                f"AFM prior sig_l.min must be < sig_l.max for time_s={time_s}"
+            )
+        if sig_l_reference < 0.0:
+            raise OptimizerError(
+                f"AFM prior sig_l.reference must be >= 0 for time_s={time_s}"
+            )
+        if thickness_min is not None:
+            assert thickness_max is not None
+            assert thickness_reference is not None
+            if thickness_min <= 0.0:
+                raise OptimizerError(
+                    f"AFM prior thickness_nm.min must be > 0 for time_s={time_s}"
+                )
+            if not thickness_min < thickness_reference < thickness_max:
+                raise OptimizerError(
+                    "AFM prior thickness_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+
+        priors[time_s] = AfmParameterPrior(
+            time_s=time_s,
+            rave_min_nm=rave_min,
+            rave_max_nm=rave_max,
+            rave_reference_nm=rave_reference,
+            sig_l_min=sig_l_min,
+            sig_l_max=sig_l_max,
+            sig_l_reference=sig_l_reference,
+            thickness_min_nm=thickness_min,
+            thickness_max_nm=thickness_max,
+            thickness_reference_nm=thickness_reference,
+        )
+
+    return AfmPriorConfig(
+        path=path,
+        source=dict(source),
+        strategy=dict(strategy),
+        priors_by_time_s=dict(sorted(priors.items())),
+    )
+
+
+def read_afm_priors(path: Path) -> dict[int, AfmParameterPrior]:
+    return read_afm_prior_config(path).priors_by_time_s
+
+
+def read_thesis_prior_config(path: Path) -> ThesisPriorConfig:
+    if not path.exists():
+        raise OptimizerError(f"Thesis priors JSON does not exist: {path}")
+    if not path.is_file():
+        raise OptimizerError(f"Thesis priors JSON is not a file: {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OptimizerError(f"Could not parse thesis priors JSON {path}: {exc}") from exc
+
+    if raw.get("schema_version") != 1:
+        raise OptimizerError("Thesis priors JSON schema_version must be 1")
+
+    source = require_nested_mapping(raw, "source", "source")
+    if source.get("model") != "mmgm_single":
+        raise OptimizerError("Thesis priors source.model must be 'mmgm_single'")
+    if source.get("distribution") != "single_lognormal":
+        raise OptimizerError(
+            "Thesis priors source.distribution must be 'single_lognormal'"
+        )
+
+    strategy = raw.get("strategy", {})
+    if not isinstance(strategy, dict):
+        raise OptimizerError("Thesis priors field strategy must be an object")
+    strategy_name = strategy.get("name")
+    if not isinstance(strategy_name, str) or not strategy_name:
+        raise OptimizerError("Thesis priors strategy.name must be a non-empty string")
+    is_fixed_strategy = strategy_name == "fixed"
+
+    bounds_by_time = raw.get("bounds_by_time_s")
+    if not isinstance(bounds_by_time, dict) or not bounds_by_time:
+        raise OptimizerError("Thesis priors bounds_by_time_s must be a non-empty object")
+
+    priors: dict[int, AfmParameterPrior] = {}
+    for raw_time_s, entry in bounds_by_time.items():
+        try:
+            time_s = int(raw_time_s)
+        except (TypeError, ValueError) as exc:
+            raise OptimizerError(
+                f"Thesis priors time key must parse to an integer: {raw_time_s!r}"
+            ) from exc
+        if str(time_s) != str(raw_time_s):
+            raise OptimizerError(
+                f"Thesis priors time key must be a base-10 integer string: {raw_time_s!r}"
+            )
+        if time_s in priors:
+            raise OptimizerError(f"Duplicate thesis prior time_s: {time_s}")
+        if not isinstance(entry, dict):
+            raise OptimizerError(f"Thesis prior entry for time_s={time_s} must be an object")
+
+        rave = require_nested_mapping(entry, "rave_nm", "rave_nm", time_s)
+        sig_l = require_nested_mapping(entry, "sig_l", "sig_l", time_s)
+        thickness = require_nested_mapping(entry, "thickness_nm", "thickness_nm", time_s)
+        rave_min = require_finite_number(rave.get("min"), "rave_nm.min", time_s)
+        rave_max = require_finite_number(rave.get("max"), "rave_nm.max", time_s)
+        rave_reference = require_finite_number(
+            rave.get("reference"),
+            "rave_nm.reference",
+            time_s,
+        )
+        sig_l_min = require_finite_number(sig_l.get("min"), "sig_l.min", time_s)
+        sig_l_max = require_finite_number(sig_l.get("max"), "sig_l.max", time_s)
+        sig_l_reference = require_finite_number(
+            sig_l.get("reference"),
+            "sig_l.reference",
+            time_s,
+        )
+        thickness_min = require_finite_number(
+            thickness.get("min"),
+            "thickness_nm.min",
+            time_s,
+        )
+        thickness_max = require_finite_number(
+            thickness.get("max"),
+            "thickness_nm.max",
+            time_s,
+        )
+        thickness_reference = require_finite_number(
+            thickness.get("reference"),
+            "thickness_nm.reference",
+            time_s,
+        )
+
+        if rave_min <= 0.0:
+            raise OptimizerError(f"Thesis prior rave_nm.min must be > 0 for time_s={time_s}")
+        if sig_l_min < 0.0:
+            raise OptimizerError(f"Thesis prior sig_l.min must be >= 0 for time_s={time_s}")
+        if thickness_min <= 0.0:
+            raise OptimizerError(
+                f"Thesis prior thickness_nm.min must be > 0 for time_s={time_s}"
+            )
+        if is_fixed_strategy:
+            if not (
+                rave_min == rave_max == rave_reference
+                and sig_l_min == sig_l_max == sig_l_reference
+                and thickness_min == thickness_max == thickness_reference
+            ):
+                raise OptimizerError(
+                    "Fixed thesis priors must have min=max=reference for "
+                    f"time_s={time_s}"
+                )
+        else:
+            if not rave_min < rave_reference < rave_max:
+                raise OptimizerError(
+                    "Thesis prior rave_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+            if not sig_l_min < sig_l_reference < sig_l_max:
+                raise OptimizerError(
+                    "Thesis prior sig_l bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+            if not thickness_min < thickness_reference < thickness_max:
+                raise OptimizerError(
+                    "Thesis prior thickness_nm bounds must satisfy "
+                    f"min < reference < max for time_s={time_s}"
+                )
+
+        priors[time_s] = AfmParameterPrior(
+            time_s=time_s,
+            rave_min_nm=rave_min,
+            rave_max_nm=rave_max,
+            rave_reference_nm=rave_reference,
+            sig_l_min=sig_l_min,
+            sig_l_max=sig_l_max,
+            sig_l_reference=sig_l_reference,
+            thickness_min_nm=thickness_min,
+            thickness_max_nm=thickness_max,
+            thickness_reference_nm=thickness_reference,
+        )
+
+    return ThesisPriorConfig(
+        path=path,
+        source=dict(source),
+        strategy=dict(strategy),
+        priors_by_time_s=dict(sorted(priors.items())),
+    )
+
+
+def transform_value(minimum: float, maximum: float, transform: str, unit_value: float) -> float:
+    if transform == "log":
+        if minimum <= 0.0 or maximum <= 0.0:
+            raise OptimizerError("Log-spaced bounds must be positive")
+        return math.exp(math.log(minimum) + unit_value * (math.log(maximum) - math.log(minimum)))
+    return minimum + unit_value * (maximum - minimum)
+
+
+def thickness_bounds_for_prior(
+    bounds: ModelBounds,
+    prior: AfmParameterPrior | None,
+    afm_thickness_prior: str,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+) -> tuple[float, float]:
+    if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
+    if (
+        afm_thickness_prior == "bounded"
+        and prior is not None
+        and prior.thickness_reference_nm is not None
+    ):
+        return (
+            afm_thickness_scale_low * prior.thickness_reference_nm,
+            afm_thickness_scale_high * prior.thickness_reference_nm,
+        )
+    return bounds.thickness_min_nm, bounds.thickness_max_nm
+
+
+def thickness_from_unit_value(
+    bounds: ModelBounds,
+    unit_value: float,
+    prior: AfmParameterPrior | None = None,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+) -> float:
+    thickness_min, thickness_max = thickness_bounds_for_prior(
+        bounds,
+        prior,
+        afm_thickness_prior,
+        afm_thickness_scale_low,
+        afm_thickness_scale_high,
+    )
+    return transform_value(
+        thickness_min,
+        thickness_max,
+        bounds.thickness_transform,
+        unit_value,
+    )
+
+
+def thesis_thickness_from_unit_value(
+    bounds: ModelBounds,
+    unit_value: float,
+    prior: AfmParameterPrior,
+) -> float:
+    if prior.thickness_min_nm is None or prior.thickness_max_nm is None:
+        raise OptimizerError(
+            f"Thesis prior missing thickness bounds for time_s={prior.time_s}"
+        )
+    return transform_value(
+        prior.thickness_min_nm,
+        prior.thickness_max_nm,
+        bounds.thickness_transform,
+        unit_value,
+    )
+
+
+def load_template(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_trial_json(path: Path, model: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
+
+
+def prepare_trial_model(
+    *,
+    template: dict[str, Any],
+    model_lib: ModelLib,
+    spectrum: Spectrum,
+    geometry: str,
+    effe: float,
+    thickness_nm: float,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
+) -> dict[str, Any]:
+    model = json.loads(json.dumps(template))
+    grid_min, grid_max, grid_step, _ = spectrum.grid
+    model["wavelength_grid_nm"] = {
+        "min": grid_min,
+        "max": grid_max,
+        "step": grid_step,
+    }
+
+    for layer in model["stack"]["layers"]:
+        if layer.get("kind") != "effective_medium":
+            continue
+        layer["thickness_nm"] = thickness_nm
+        if rave_nm is None or sig_l is None:
+            model_lib.configure_effective_medium(
+                layer["effective_medium"],
+                geometry=geometry,
+                effe=effe,
+            )
+        else:
+            model_lib.configure_effective_medium(
+                layer["effective_medium"],
+                geometry=geometry,
+                effe=effe,
+                rave_nm=rave_nm,
+                sig_l=sig_l,
+            )
+        return model
+
+    raise OptimizerError("Template JSON has no effective_medium layer")
+
+
+def read_experimental_spectrum(path: Path) -> Spectrum:
+    """Read an experimental spectrum: wavelength [col 0], transmittance [col 2]."""
+    wavelengths: list[float] = []
+    transmittance: list[float] = []
+    total_data_lines = 0
+    skipped_lines = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        total_data_lines += 1
+        parts = stripped.split()
+        if len(parts) < 3:
+            skipped_lines += 1
+            continue
+        try:
+            wavelength = float(parts[0])
+            value = float(parts[2])
+        except ValueError:
+            skipped_lines += 1
+            continue
+        if not math.isfinite(wavelength) or not math.isfinite(value):
+            raise OptimizerError(f"Non-finite experimental value in {path}: {line}")
+        wavelengths.append(wavelength)
+        transmittance.append(value)
+
+    if not wavelengths:
+        raise OptimizerError(f"No experimental spectrum rows found in {path}")
+    if len(wavelengths) < 0.5 * total_data_lines:
+        raise OptimizerError(
+            f"Too many skipped experimental rows in {path}: "
+            f"parsed {len(wavelengths)} of {total_data_lines} non-comment lines "
+            f"(skipped {skipped_lines})"
+        )
+    return Spectrum(path=path, wavelengths_nm=wavelengths, transmittance=transmittance)
+
+
+def validate_uniform_grid(spectrum: Spectrum) -> None:
+    wavelengths = spectrum.wavelengths_nm
+    if len(wavelengths) < 2:
+        raise OptimizerError(f"Spectrum has too few points: {spectrum.path}")
+    step = wavelengths[1] - wavelengths[0]
+    if step <= 0.0:
+        raise OptimizerError(f"Spectrum grid is not increasing: {spectrum.path}")
+    for previous, current in zip(wavelengths, wavelengths[1:], strict=False):
+        if abs((current - previous) - step) > 1e-9:
+            raise OptimizerError(f"Spectrum grid is not uniform: {spectrum.path}")
+
+
+def covers_fit_window(spectrum: Spectrum, fit_window: FitWindow) -> bool:
+    grid_min, grid_max, _, _ = spectrum.grid
+    return grid_min <= fit_window.min_nm and grid_max >= fit_window.max_nm
+
+
+def common_plot_window(spectra: Sequence[Spectrum]) -> PlotWindow:
+    if not spectra:
+        raise OptimizerError("No spectra found")
+    common_min = max(spectrum.grid[0] for spectrum in spectra)
+    common_max = min(spectrum.grid[1] for spectrum in spectra)
+    if common_min >= common_max:
+        raise OptimizerError(
+            "No positive common wavelength range exists across the transmittance spectra"
+        )
+    return PlotWindow(min_nm=common_min, max_nm=common_max)
+
+
+def deposition_time_seconds(path: Path) -> int:
+    match = re.search(r"(?:^|_)(\d+)s(?:_|$)", path.stem)
+    if match is None:
+        raise OptimizerError(
+            f"Could not infer deposition/exposure time from spectrum filename: {path.name}"
+        )
+    return int(match.group(1))
+
+
+def discover_spectra(spectra_dir: Path) -> list[Path]:
+    if not spectra_dir.is_dir():
+        raise OptimizerError(f"Missing spectra directory: {spectra_dir}")
+    paths = [
+        path
+        for path in spectra_dir.glob("*.dat")
+        if path.name != "transmittance_manifest.dat"
+    ]
+    return sorted(paths, key=lambda path: (deposition_time_seconds(path), path.name))
+
+
+def project_relative(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def gnuplot_relative(path: Path, target_path: Path) -> str:
+    return os.path.relpath(target_path.resolve(), start=path.parent.resolve())
+
+
+def output_stem(experimental_basename: str) -> str:
+    return f"optimal_global_{experimental_basename}"
+
+
+def read_model_spectrum(path: Path) -> Spectrum:
+    """Read model output: wavelength [col 0], transmittance [col 2]."""
+    wavelengths: list[float] = []
+    transmittance: list[float] = []
+    total_data_lines = 0
+    skipped_lines = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        total_data_lines += 1
+        parts = stripped.split()
+        if len(parts) < 3:
+            skipped_lines += 1
+            continue
+        try:
+            wavelength = float(parts[0])
+            value = float(parts[2])
+        except ValueError:
+            skipped_lines += 1
+            continue
+        if not math.isfinite(wavelength):
+            raise OptimizerError(f"Non-finite model wavelength in {path}: {line}")
+        wavelengths.append(wavelength)
+        transmittance.append(value)
+    if not wavelengths:
+        raise OptimizerError(f"No model spectrum rows found in {path}")
+    if len(wavelengths) < 0.5 * total_data_lines:
+        raise OptimizerError(
+            f"Too many skipped model rows in {path}: "
+            f"parsed {len(wavelengths)} of {total_data_lines} non-comment lines "
+            f"(skipped {skipped_lines})"
+        )
+    return Spectrum(path=path, wavelengths_nm=wavelengths, transmittance=transmittance)
+
+
+def grids_compatible(
+    g1: tuple[float, float, float, int],
+    g2: tuple[float, float, float, int],
+    tol: float = 1e-6,
+) -> bool:
+    return (
+        abs(g1[0] - g2[0]) < tol
+        and abs(g1[1] - g2[1]) < tol
+        and abs(g1[2] - g2[2]) < tol
+        and g1[3] == g2[3]
+    )
+
+
+def finite_objective_points(
+    experimental: Spectrum,
+    theoretical: Spectrum,
+    fit_window: FitWindow,
+) -> tuple[int, int]:
+    valid_points = 0
+    invalid_points = 0
+    for wavelength, exp_t, model_t in zip(
+        experimental.wavelengths_nm,
+        experimental.transmittance,
+        theoretical.transmittance,
+        strict=True,
+    ):
+        if wavelength < fit_window.min_nm or wavelength > fit_window.max_nm:
+            continue
+        if math.isfinite(exp_t) and math.isfinite(model_t):
+            valid_points += 1
+        else:
+            invalid_points += 1
+    return valid_points, invalid_points
+
+
+def sse_transmittance(
+    experimental: Spectrum,
+    theoretical: Spectrum,
+    fit_window: FitWindow,
+) -> tuple[float, int, int]:
+    if len(experimental.wavelengths_nm) != len(theoretical.wavelengths_nm):
+        raise OptimizerError(
+            "Experimental/model wavelength grids differ in length: "
+            f"{experimental.path} vs {theoretical.path}"
+        )
+    if not grids_compatible(experimental.grid, theoretical.grid):
+        raise OptimizerError(
+            "Experimental/model wavelength grids differ: "
+            f"{experimental.grid} vs {theoretical.grid}"
+        )
+    sse = 0.0
+    n_points = 0
+    for exp_w, exp_t, model_w, model_t in zip(
+        experimental.wavelengths_nm,
+        experimental.transmittance,
+        theoretical.wavelengths_nm,
+        theoretical.transmittance,
+        strict=True,
+    ):
+        if abs(exp_w - model_w) > 1e-6:
+            raise OptimizerError(
+                f"Experimental/model wavelengths differ: {exp_w} vs {model_w}"
+            )
+        if exp_w < fit_window.min_nm or exp_w > fit_window.max_nm:
+            continue
+        if not math.isfinite(exp_t) or not math.isfinite(model_t):
+            continue
+        residual = model_t - exp_t
+        sse += residual * residual
+        n_points += 1
+    if n_points == 0:
+        raise OptimizerError(
+            "No finite wavelength points available for SSE inside "
+            f"{fit_window.min_nm}-{fit_window.max_nm} nm"
+        )
+    valid_points, invalid_points = finite_objective_points(
+        experimental, theoretical, fit_window
+    )
+    return sse, valid_points, invalid_points
+
+
+def parameters_from_unit_vector(
+    unit_values: Sequence[float],
+    bounds: ModelBounds,
+) -> list[tuple[float, float]]:
+    if len(unit_values) % 2 != 0:
+        raise OptimizerError("MG/Bruggeman global parameter vector must have even length")
+    parameters: list[tuple[float, float]] = []
+    for index in range(0, len(unit_values), 2):
+        effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
+        thickness_nm = transform_value(
+            bounds.thickness_min_nm,
+            bounds.thickness_max_nm,
+            bounds.thickness_transform,
+            unit_values[index + 1],
+        )
+        parameters.append((effe, thickness_nm))
+    return parameters
+
+
+def require_mmgm_single_bounds(bounds: ModelBounds) -> None:
+    missing = []
+    if bounds.rave_min_nm is None or bounds.rave_max_nm is None:
+        missing.append("rave_nm")
+    if bounds.sig_l_min is None or bounds.sig_l_max is None:
+        missing.append("sig_l")
+    if missing:
+        raise OptimizerError(
+            "MMGM single-lognormal bounds are missing parameter(s): "
+            + ", ".join(missing)
+        )
+
+
+def mmgm_single_global_parameters_from_unit_vector(
+    unit_values: Sequence[float],
+    bounds: ModelBounds,
+    n_spectra: int,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    thesis_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    spectrum_times_s: Sequence[int] | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+) -> list[tuple[float, float, float, float]]:
+    if afm_priors_mode not in AFM_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_sigl_mode not in AFM_SIGL_MODES:
+        raise OptimizerError(f"Invalid AFM sigL mode: {afm_sigl_mode}")
+    if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
+    if afm_priors_mode == "fixed" and afm_priors_by_time_s is None:
+        raise OptimizerError("AFM priors fixed mode requires AFM priors")
+    if afm_sigl_mode == "fixed" and afm_priors_mode == "bounded" and afm_priors_by_time_s is None:
+        raise OptimizerError("AFM sigL fixed mode requires AFM priors")
+    if thesis_priors_mode not in THESIS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid thesis priors mode: {thesis_priors_mode}")
+    if afm_priors_by_time_s is not None and thesis_priors_by_time_s is not None:
+        raise OptimizerError("AFM priors and thesis priors cannot be enabled together")
+    if thesis_priors_mode == "fixed" and thesis_priors_by_time_s is None:
+        raise OptimizerError("Thesis priors fixed mode requires thesis priors")
+
+    parameters_per_spectrum = parameter_count_for_model(
+        "mmgm_spheres_single",
+        afm_priors_mode=afm_priors_mode,
+        afm_sigl_mode=afm_sigl_mode,
+        afm_priors_enabled=afm_priors_by_time_s is not None,
+        thesis_priors_mode=thesis_priors_mode,
+        thesis_priors_enabled=thesis_priors_by_time_s is not None,
+    )
+    expected_values = parameters_per_spectrum * n_spectra
+    if len(unit_values) != expected_values:
+        raise OptimizerError(
+            f"MMGM single global parameter vector must have {expected_values} values"
+        )
+    if afm_priors_by_time_s is not None:
+        if spectrum_times_s is None:
+            raise OptimizerError("AFM priors require spectrum_times_s for MMGM mapping")
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "AFM priors require one spectrum time per MMGM spectrum"
+            )
+        require_afm_prior_times(
+            afm_priors_by_time_s=afm_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+    if thesis_priors_by_time_s is not None:
+        if spectrum_times_s is None:
+            raise OptimizerError("Thesis priors require spectrum_times_s for MMGM mapping")
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "Thesis priors require one spectrum time per MMGM spectrum"
+            )
+        require_afm_prior_times(
+            afm_priors_by_time_s=thesis_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+    if (
+        afm_priors_mode == "bounded"
+        or (afm_priors_by_time_s is None and thesis_priors_by_time_s is None)
+    ):
+        require_mmgm_single_bounds(bounds)
+        assert bounds.rave_min_nm is not None
+        assert bounds.rave_max_nm is not None
+        assert bounds.sig_l_min is not None
+        assert bounds.sig_l_max is not None
+    parameters: list[tuple[float, float, float, float]] = []
+    for spectrum_index in range(n_spectra):
+        index = parameters_per_spectrum * spectrum_index
+        if thesis_priors_by_time_s is not None:
+            assert spectrum_times_s is not None
+            time_s = spectrum_times_s[spectrum_index]
+            try:
+                prior = thesis_priors_by_time_s[time_s]
+            except KeyError as exc:
+                raise OptimizerError(
+                    f"Missing thesis prior for spectrum time_s={time_s}"
+                ) from exc
+            effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
+            if thesis_priors_mode == "fixed":
+                if prior.thickness_reference_nm is None:
+                    raise OptimizerError(
+                        f"Thesis prior missing thickness reference for time_s={time_s}"
+                    )
+                thickness_nm = prior.thickness_reference_nm
+                rave_nm = prior.rave_reference_nm
+                sig_l = prior.sig_l_reference
+            else:
+                thickness_nm = thesis_thickness_from_unit_value(
+                    bounds,
+                    unit_values[index + 1],
+                    prior,
+                )
+                rave_nm = transform_value(
+                    prior.rave_min_nm,
+                    prior.rave_max_nm,
+                    bounds.rave_transform,
+                    unit_values[index + 2],
+                )
+                sig_l = transform_value(
+                    prior.sig_l_min,
+                    prior.sig_l_max,
+                    bounds.sig_l_transform,
+                    unit_values[index + 3],
+                )
+            parameters.append((effe, thickness_nm, rave_nm, sig_l))
+            continue
+
+        if afm_priors_by_time_s is None:
+            prior = None
+            assert bounds.rave_min_nm is not None
+            assert bounds.rave_max_nm is not None
+            assert bounds.sig_l_min is not None
+            assert bounds.sig_l_max is not None
+            rave_min_nm = bounds.rave_min_nm
+            rave_max_nm = bounds.rave_max_nm
+            sig_l_min = bounds.sig_l_min
+            sig_l_max = bounds.sig_l_max
+        else:
+            assert spectrum_times_s is not None
+            time_s = spectrum_times_s[spectrum_index]
+            try:
+                prior = afm_priors_by_time_s[time_s]
+            except KeyError as exc:
+                raise OptimizerError(f"Missing AFM prior for spectrum time_s={time_s}") from exc
+            if afm_priors_mode == "fixed":
+                rave_min_nm = prior.rave_reference_nm
+                rave_max_nm = prior.rave_reference_nm
+                sig_l_min = prior.sig_l_reference
+                sig_l_max = prior.sig_l_reference
+            else:
+                rave_min_nm = prior.rave_min_nm
+                rave_max_nm = prior.rave_max_nm
+                sig_l_min = prior.sig_l_min
+                sig_l_max = prior.sig_l_max
+        effe = transform_value(bounds.effe_min, bounds.effe_max, "none", unit_values[index])
+        thickness_nm = thickness_from_unit_value(
+            bounds,
+            unit_values[index + 1],
+            prior,
+            afm_thickness_prior,
+            afm_thickness_scale_low,
+            afm_thickness_scale_high,
+        )
+        if afm_priors_mode == "fixed":
+            rave_nm = rave_min_nm
+            sig_l = sig_l_min
+        else:
+            rave_nm = transform_value(
+                rave_min_nm,
+                rave_max_nm,
+                bounds.rave_transform,
+                unit_values[index + 2],
+            )
+            if afm_sigl_mode == "fixed" and prior is not None:
+                sig_l = prior.sig_l_reference
+            else:
+                sig_l = transform_value(
+                    sig_l_min,
+                    sig_l_max,
+                    bounds.sig_l_transform,
+                    unit_values[index + 3],
+                )
+        parameters.append((effe, thickness_nm, rave_nm, sig_l))
+    return parameters
+
+
+def h_ag_values(parameters: Sequence[Sequence[float]]) -> list[float]:
+    return [parameter[0] * parameter[1] for parameter in parameters]
+
+
+def violates_monotonic_h_ag(parameters: Sequence[Sequence[float]]) -> bool:
+    values = h_ag_values(parameters)
+    return any(left > right for left, right in zip(values, values[1:], strict=False))
+
+
+def violates_hag_window(
+    parameters: Sequence[Sequence[float]],
+    constraint: HagWindowConstraint,
+) -> bool:
+    if not constraint.enabled:
+        return False
+    if constraint.min_nm is None or constraint.max_nm is None:
+        raise OptimizerError("Bounded hAg window requires min_nm and max_nm")
+    return any(
+        h_ag_nm < constraint.min_nm or h_ag_nm > constraint.max_nm
+        for h_ag_nm in h_ag_values(parameters)
+    )
+
+
+def fit_hag_linearity(times_s: Sequence[int], h_ag_nm: Sequence[float]) -> HagLinearFit:
+    if len(times_s) != len(h_ag_nm):
+        raise OptimizerError("hAg linearity fit requires matching time and hAg lengths")
+    if len(times_s) < 2:
+        return HagLinearFit(
+            slope=0.0,
+            intercept=float(h_ag_nm[0]) if h_ag_nm else 0.0,
+            r2=1.0,
+            max_relative_deviation=0.0,
+            penalty=0.0,
+        )
+    times = [float(value) for value in times_s]
+    values = [float(value) for value in h_ag_nm]
+    mean_time = sum(times) / len(times)
+    mean_value = sum(values) / len(values)
+    centered_time = [value - mean_time for value in times]
+    centered_value = [value - mean_value for value in values]
+    denominator = sum(value * value for value in centered_time)
+    slope = (
+        sum(left * right for left, right in zip(centered_time, centered_value, strict=True))
+        / denominator
+        if denominator > 0.0
+        else 0.0
+    )
+    intercept = mean_value - slope * mean_time
+    fitted = [slope * time_s + intercept for time_s in times]
+    residuals = [actual - predicted for actual, predicted in zip(values, fitted, strict=True)]
+    total_ss = sum((actual - mean_value) ** 2 for actual in values)
+    residual_ss = sum(residual * residual for residual in residuals)
+    r2 = 1.0 if total_ss <= 0.0 else 1.0 - residual_ss / total_ss
+    relative_deviations = [
+        abs(actual - predicted) / max(abs(predicted), 1.0e-12)
+        for actual, predicted in zip(values, fitted, strict=True)
+    ]
+    penalty = sum(value * value for value in relative_deviations) / len(relative_deviations)
+    return HagLinearFit(
+        slope=slope,
+        intercept=intercept,
+        r2=r2,
+        max_relative_deviation=max(relative_deviations),
+        penalty=penalty,
+    )
+
+
+def lognormal_radius_descriptors(
+    *, rave_nm: float, sig_l: float, thickness_nm: float
+) -> dict[str, float]:
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
+    r_p95 = math.exp(mu_l + LOGNORMAL_P95_Z * sig_l)
+    r_p99 = math.exp(mu_l + LOGNORMAL_P99_Z * sig_l)
+    return {
+        "mean_radius_nm": rave_nm,
+        "median_radius_nm": math.exp(mu_l),
+        "mode_radius_nm": math.exp(mu_l - sig_l * sig_l),
+        "r_p95_nm": r_p95,
+        "r_p99_nm": r_p99,
+        "thickness_over_2rp95": thickness_nm / (2.0 * r_p95),
+        "thickness_over_2rp99": thickness_nm / (2.0 * r_p99),
+    }
+
+
+def lognormal_radius_percentile(rave_nm: float, sig_l: float, percentile: float) -> float:
+    z_value = {
+        0.95: LOGNORMAL_P95_Z,
+        0.99: LOGNORMAL_P99_Z,
+    }[percentile]
+    mu_l = math.log(rave_nm) - 0.5 * sig_l * sig_l
+    return math.exp(mu_l + z_value * sig_l)
+
+
+def thesis_prior_reference_json(prior: AfmParameterPrior) -> dict[str, Any]:
+    if prior.thickness_reference_nm is None:
+        raise OptimizerError(
+            f"Thesis prior missing thickness reference for time_s={prior.time_s}"
+        )
+    if prior.thickness_min_nm is None or prior.thickness_max_nm is None:
+        raise OptimizerError(
+            f"Thesis prior missing thickness bounds for time_s={prior.time_s}"
+        )
+    return {
+        "rave_nm": prior.rave_reference_nm,
+        "sig_l": prior.sig_l_reference,
+        "thickness_nm": prior.thickness_reference_nm,
+        "bounds": {
+            "rave_nm": {
+                "min": prior.rave_min_nm,
+                "max": prior.rave_max_nm,
+            },
+            "sig_l": {
+                "min": prior.sig_l_min,
+                "max": prior.sig_l_max,
+            },
+            "thickness_nm": {
+                "min": prior.thickness_min_nm,
+                "max": prior.thickness_max_nm,
+            },
+        },
+    }
+
+
+def violates_thickness_tail_constraint(
+    thickness_nm: float,
+    rave_nm: float,
+    sig_l: float,
+    bounds: ModelBounds,
+) -> bool:
+    constraint = bounds.thickness_tail_constraint
+    if not constraint.enabled:
+        return False
+    radius_nm = lognormal_radius_percentile(rave_nm, sig_l, constraint.percentile)
+    return thickness_nm > constraint.factor * radius_nm
+
+
+def parameter_count_for_model(
+    model_name: str,
+    *,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
+    afm_priors_enabled: bool = False,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+    thesis_priors_enabled: bool = False,
+) -> int:
+    if afm_priors_mode not in AFM_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_sigl_mode not in AFM_SIGL_MODES:
+        raise OptimizerError(f"Invalid AFM sigL mode: {afm_sigl_mode}")
+    if thesis_priors_mode not in THESIS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid thesis priors mode: {thesis_priors_mode}")
+    if afm_priors_enabled and thesis_priors_enabled:
+        raise OptimizerError("AFM priors and thesis priors cannot be enabled together")
+    if model_name in MMGM_SINGLE_MODELS:
+        if thesis_priors_enabled and thesis_priors_mode == "fixed":
+            return 1
+        if thesis_priors_enabled and thesis_priors_mode == "bounded":
+            return 4
+        if afm_priors_enabled and afm_priors_mode == "fixed":
+            return 2
+        if afm_priors_enabled and afm_priors_mode == "bounded" and afm_sigl_mode == "fixed":
+            return 3
+        return 4
+    return 2
+
+
+def require_afm_prior_times(
+    *,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior],
+    spectrum_times_s: Sequence[int] | None,
+) -> None:
+    if spectrum_times_s is None:
+        raise OptimizerError("AFM priors require spectrum_times_s")
+    missing = sorted(set(spectrum_times_s) - set(afm_priors_by_time_s))
+    if missing:
+        raise OptimizerError(
+            "Missing AFM prior(s) for spectrum time_s: "
+            + ", ".join(str(time_s) for time_s in missing)
+        )
+
+
+def feasible_initial_population(
+    *,
+    model_name: str,
+    n_spectra: int,
+    bounds: ModelBounds,
+    population_count: int,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    thesis_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    spectrum_times_s: Sequence[int] | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+    hag_window_constraint: HagWindowConstraint = HagWindowConstraint(),
+) -> list[list[float]]:
+    rng = random.Random(bounds.seed)
+    afm_priors_enabled = afm_priors_by_time_s is not None
+    thesis_priors_enabled = thesis_priors_by_time_s is not None
+    if afm_priors_enabled and thesis_priors_enabled:
+        raise OptimizerError("AFM priors and thesis priors cannot be enabled together")
+    parameters_per_spectrum = parameter_count_for_model(
+        model_name,
+        afm_priors_mode=afm_priors_mode,
+        afm_sigl_mode=afm_sigl_mode,
+        afm_priors_enabled=afm_priors_enabled,
+        thesis_priors_mode=thesis_priors_mode,
+        thesis_priors_enabled=thesis_priors_enabled,
+    )
+    if afm_priors_by_time_s is not None:
+        if model_name not in MMGM_SINGLE_MODELS:
+            raise OptimizerError("AFM priors are only supported for MMGM single models")
+        require_afm_prior_times(
+            afm_priors_by_time_s=afm_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+        assert spectrum_times_s is not None
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "AFM priors require one spectrum time per initial-population spectrum"
+            )
+    if thesis_priors_by_time_s is not None:
+        if model_name not in MMGM_SINGLE_MODELS:
+            raise OptimizerError("Thesis priors are only supported for MMGM single models")
+        require_afm_prior_times(
+            afm_priors_by_time_s=thesis_priors_by_time_s,
+            spectrum_times_s=spectrum_times_s,
+        )
+        assert spectrum_times_s is not None
+        if len(spectrum_times_s) != n_spectra:
+            raise OptimizerError(
+                "Thesis priors require one spectrum time per initial-population spectrum"
+            )
+    population: list[list[float]] = []
+    while len(population) < population_count:
+        candidate_parameters: list[tuple[float, list[float]]] = []
+        attempts = 0
+        while len(candidate_parameters) < n_spectra:
+            attempts += 1
+            if attempts > 10000:
+                raise OptimizerError(
+                    "Could not build a feasible initial MMGM population; "
+                    "check bounds and thickness-tail constraint."
+                )
+            effe_unit = rng.random()
+            thickness_unit = rng.random()
+            effe = transform_value(bounds.effe_min, bounds.effe_max, "none", effe_unit)
+            if thesis_priors_by_time_s is not None:
+                assert spectrum_times_s is not None
+                prior = thesis_priors_by_time_s[spectrum_times_s[len(candidate_parameters)]]
+                if thesis_priors_mode == "fixed":
+                    if prior.thickness_reference_nm is None:
+                        raise OptimizerError(
+                            "Thesis fixed priors require thickness references"
+                        )
+                    thickness_nm = prior.thickness_reference_nm
+                    unit_values = [effe_unit]
+                else:
+                    thickness_nm = thesis_thickness_from_unit_value(
+                        bounds,
+                        thickness_unit,
+                        prior,
+                    )
+                    unit_values = [effe_unit, thickness_unit]
+            else:
+                thickness_nm = thickness_from_unit_value(bounds, thickness_unit)
+                unit_values = [effe_unit, thickness_unit]
+            h_ag_nm = effe * thickness_nm
+            if (
+                hag_window_constraint.enabled
+                and (
+                    hag_window_constraint.min_nm is None
+                    or hag_window_constraint.max_nm is None
+                    or h_ag_nm < hag_window_constraint.min_nm
+                    or h_ag_nm > hag_window_constraint.max_nm
+                )
+            ):
+                continue
+            if (
+                model_name in MMGM_SINGLE_MODELS
+                and parameters_per_spectrum == 4
+                and thesis_priors_by_time_s is None
+            ):
+                require_mmgm_single_bounds(bounds)
+                assert bounds.rave_min_nm is not None
+                assert bounds.rave_max_nm is not None
+                assert bounds.sig_l_min is not None
+                assert bounds.sig_l_max is not None
+                if afm_priors_by_time_s is None:
+                    rave_unit = rng.random()
+                    sig_l_unit = rng.random()
+                    rave_nm = transform_value(
+                        bounds.rave_min_nm,
+                        bounds.rave_max_nm,
+                        bounds.rave_transform,
+                        rave_unit,
+                    )
+                    sig_l = transform_value(
+                        bounds.sig_l_min,
+                        bounds.sig_l_max,
+                        bounds.sig_l_transform,
+                        sig_l_unit,
+                    )
+                    if violates_thickness_tail_constraint(thickness_nm, rave_nm, sig_l, bounds):
+                        continue
+                    unit_values.extend([rave_unit, sig_l_unit])
+            candidate_parameters.append((h_ag_nm, unit_values))
+        candidate = []
+        candidate_violates_tail_constraint = False
+        ordered_parameters = sorted(candidate_parameters, key=lambda item: item[0])
+        for spectrum_index, (_, unit_values) in enumerate(ordered_parameters):
+            if thesis_priors_by_time_s is not None:
+                assert spectrum_times_s is not None
+                prior = thesis_priors_by_time_s[spectrum_times_s[spectrum_index]]
+                if thesis_priors_mode == "fixed":
+                    if prior.thickness_reference_nm is None:
+                        raise OptimizerError(
+                            f"Thesis prior missing thickness reference for time_s={prior.time_s}"
+                        )
+                    if violates_thickness_tail_constraint(
+                        prior.thickness_reference_nm,
+                        prior.rave_reference_nm,
+                        prior.sig_l_reference,
+                        bounds,
+                    ):
+                        candidate_violates_tail_constraint = True
+                        break
+                    candidate.extend(unit_values)
+                    continue
+                thickness_nm = thesis_thickness_from_unit_value(
+                    bounds,
+                    unit_values[1],
+                    prior,
+                )
+                attempts = 0
+                while True:
+                    attempts += 1
+                    if attempts > 10000:
+                        raise OptimizerError(
+                            "Could not build a feasible thesis-prior MMGM initial "
+                            "population; check priors and thickness-tail constraint."
+                        )
+                    rave_unit = rng.random()
+                    sig_l_unit = rng.random()
+                    rave_nm = transform_value(
+                        prior.rave_min_nm,
+                        prior.rave_max_nm,
+                        bounds.rave_transform,
+                        rave_unit,
+                    )
+                    sig_l = transform_value(
+                        prior.sig_l_min,
+                        prior.sig_l_max,
+                        bounds.sig_l_transform,
+                        sig_l_unit,
+                    )
+                    if not violates_thickness_tail_constraint(
+                        thickness_nm,
+                        rave_nm,
+                        sig_l,
+                        bounds,
+                    ):
+                        break
+                unit_values = [*unit_values, rave_unit, sig_l_unit]
+
+            if afm_priors_by_time_s is not None:
+                assert spectrum_times_s is not None
+                prior = afm_priors_by_time_s[spectrum_times_s[spectrum_index]]
+                thickness_nm = thickness_from_unit_value(
+                    bounds,
+                    unit_values[1],
+                    prior,
+                    afm_thickness_prior,
+                    afm_thickness_scale_low,
+                    afm_thickness_scale_high,
+                )
+                if afm_priors_mode == "fixed":
+                    if violates_thickness_tail_constraint(
+                        thickness_nm,
+                        prior.rave_reference_nm,
+                        prior.sig_l_reference,
+                        bounds,
+                    ):
+                        candidate_violates_tail_constraint = True
+                        break
+                    candidate.extend(unit_values)
+                    continue
+                attempts = 0
+                while True:
+                    attempts += 1
+                    if attempts > 10000:
+                        raise OptimizerError(
+                            "Could not build a feasible AFM-prior MMGM initial "
+                            "population; check priors and thickness-tail constraint."
+                        )
+                    rave_unit = rng.random()
+                    sig_l_unit = rng.random()
+                    rave_nm = transform_value(
+                        prior.rave_min_nm,
+                        prior.rave_max_nm,
+                        bounds.rave_transform,
+                        rave_unit,
+                    )
+                    if afm_sigl_mode == "fixed":
+                        sig_l = prior.sig_l_reference
+                    else:
+                        sig_l = transform_value(
+                            prior.sig_l_min,
+                            prior.sig_l_max,
+                            bounds.sig_l_transform,
+                            sig_l_unit,
+                        )
+                    if not violates_thickness_tail_constraint(
+                        thickness_nm,
+                        rave_nm,
+                        sig_l,
+                        bounds,
+                    ):
+                        break
+                if afm_sigl_mode == "fixed":
+                    unit_values = [*unit_values, rave_unit]
+                else:
+                    unit_values = [*unit_values, rave_unit, sig_l_unit]
+            candidate.extend(unit_values)
+        if candidate_violates_tail_constraint:
+            continue
+        population.append(candidate)
+    return population
+
+
+def evaluate_spectrum_candidate(
+    *,
+    transmittance_exe: Path,
+    template: dict[str, Any],
+    model: ModelLib,
+    experimental: Spectrum,
+    geometry: str,
+    fit_window: FitWindow,
+    effe: float,
+    thickness_nm: float,
+    trial_json_path: Path,
+    trial_spectrum_path: Path,
+    rave_nm: float | None = None,
+    sig_l: float | None = None,
+) -> tuple[float, int, int]:
+    prepared_model = prepare_trial_model(
+        template=template,
+        model_lib=model,
+        spectrum=experimental,
+        geometry=geometry,
+        effe=effe,
+        thickness_nm=thickness_nm,
+        rave_nm=rave_nm,
+        sig_l=sig_l,
+    )
+    write_trial_json(trial_json_path, prepared_model)
+    trial_spectrum_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            transmittance_exe.as_posix(),
+            trial_json_path.as_posix(),
+            "--output",
+            trial_spectrum_path.as_posix(),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    theoretical = read_model_spectrum(trial_spectrum_path)
+    return sse_transmittance(experimental, theoretical, fit_window)
+
+
+def optimize_global(
+    *,
+    transmittance_exe: Path,
+    template: dict[str, Any],
+    bounds: ModelBounds,
+    model: ModelLib,
+    model_name: str,
+    geometry: str,
+    spectra: Sequence[TimedSpectrum],
+    paths: OutputPaths,
+    afm_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    thesis_priors_by_time_s: dict[int, AfmParameterPrior] | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+    hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
+    hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
+    hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
+    hag_window_constraint: HagWindowConstraint = HagWindowConstraint(),
+) -> GlobalFit:
+    best: GlobalFit | None = None
+    afm_priors_enabled = afm_priors_by_time_s is not None
+    thesis_priors_enabled = thesis_priors_by_time_s is not None
+    parameters_per_spectrum = parameter_count_for_model(
+        model_name,
+        afm_priors_mode=afm_priors_mode,
+        afm_sigl_mode=afm_sigl_mode,
+        afm_priors_enabled=afm_priors_enabled,
+        thesis_priors_mode=thesis_priors_mode,
+        thesis_priors_enabled=thesis_priors_enabled,
+    )
+    n_parameters = parameters_per_spectrum * len(spectra)
+    tmp_trial_dir = paths.tmp_dir / "trials"
+
+    def evaluate_unit_vector(unit_values: Sequence[float]) -> float:
+        nonlocal best
+        if model_name in MMGM_SINGLE_MODELS:
+            parameters = mmgm_single_global_parameters_from_unit_vector(
+                unit_values,
+                bounds,
+                len(spectra),
+                afm_priors_by_time_s=afm_priors_by_time_s,
+                thesis_priors_by_time_s=thesis_priors_by_time_s,
+                spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
+                afm_priors_mode=afm_priors_mode,
+                afm_sigl_mode=afm_sigl_mode,
+                afm_thickness_prior=afm_thickness_prior,
+                afm_thickness_scale_low=afm_thickness_scale_low,
+                afm_thickness_scale_high=afm_thickness_scale_high,
+                thesis_priors_mode=thesis_priors_mode,
+            )
+            if any(
+                violates_thickness_tail_constraint(
+                    thickness_nm, rave_nm, sig_l, bounds
+                )
+                for _, thickness_nm, rave_nm, sig_l in parameters
+            ):
+                return VERY_LARGE_SSE
+        else:
+            parameters = parameters_from_unit_vector(unit_values, bounds)
+        if violates_hag_window(parameters, hag_window_constraint):
+            return VERY_LARGE_SSE
+        if violates_monotonic_h_ag(parameters):
+            return VERY_LARGE_SSE
+        hag_linear_fit = fit_hag_linearity(
+            [timed_spectrum.time_s for timed_spectrum in spectra],
+            h_ag_values(parameters),
+        )
+        if hag_linear_fit.slope < -1.0e-12:
+            return VERY_LARGE_SSE
+        if (
+            hag_linearity_mode == "hard"
+            and hag_linear_fit.max_relative_deviation > hag_linearity_tolerance
+        ):
+            return VERY_LARGE_SSE
+
+        fits: list[SpectrumFit] = []
+        total_sse = 0.0
+        for index, (timed_spectrum, parameter_set) in enumerate(
+            zip(spectra, parameters, strict=True)
+        ):
+            if len(parameter_set) == 4:
+                effe, thickness_nm, rave_nm, sig_l = parameter_set
+            else:
+                effe, thickness_nm = parameter_set
+                rave_nm = None
+                sig_l = None
+            trial_stem = f"{timed_spectrum.spectrum.basename}_global_trial_{index}"
+            trial_json_path = tmp_trial_dir / f"{trial_stem}.json"
+            trial_spectrum_path = tmp_trial_dir / f"{trial_stem}.dat"
+            sse, valid_points, invalid_points = evaluate_spectrum_candidate(
+                transmittance_exe=transmittance_exe,
+                template=template,
+                model=model,
+                experimental=timed_spectrum.spectrum,
+                geometry=geometry,
+                fit_window=bounds.fit_window,
+                effe=effe,
+                thickness_nm=thickness_nm,
+                trial_json_path=trial_json_path,
+                trial_spectrum_path=trial_spectrum_path,
+                rave_nm=rave_nm,
+                sig_l=sig_l,
+            )
+            total_sse += sse
+            fits.append(
+                SpectrumFit(
+                    time_s=timed_spectrum.time_s,
+                    experimental=timed_spectrum.spectrum,
+                    theoretical_path=paths.output_dir
+                    / f"{output_stem(timed_spectrum.spectrum.basename)}.dat",
+                    effe=effe,
+                    thickness_nm=thickness_nm,
+                    h_ag_nm=effe * thickness_nm,
+                    sse=sse,
+                    objective_points=valid_points,
+                    invalid_points=invalid_points,
+                    rave_nm=rave_nm,
+                    sig_l=sig_l,
+                )
+            )
+
+        objective_value = total_sse
+        if hag_linearity_mode == "soft":
+            objective_value += hag_linearity_weight * hag_linear_fit.penalty
+
+        if best is None or objective_value < best.objective_value:
+            best = GlobalFit(
+                total_sse=total_sse,
+                spectra=fits,
+                objective_value=objective_value,
+                hag_linear_fit=hag_linear_fit,
+            )
+            for index, (fit, timed_spectrum) in enumerate(zip(fits, spectra, strict=True)):
+                trial_spectrum_path = (
+                    tmp_trial_dir
+                    / f"{timed_spectrum.spectrum.basename}_global_trial_{index}.dat"
+                )
+                fit.theoretical_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(trial_spectrum_path, fit.theoretical_path)
+            print(
+                "new global best:\n"
+                f"  total_SSE={total_sse:.8g}\n"
+                f"  objective={objective_value:.8g}\n"
+                "  hAg=["
+                + ", ".join(f"{fit.h_ag_nm:.6g}" for fit in fits)
+                + "]",
+                flush=True,
+            )
+        return total_sse
+
+    try:
+        from scipy.optimize import differential_evolution
+    except ImportError as exc:
+        raise OptimizerError(
+            "SciPy is required for global optimization. Install scipy to use this tool."
+        ) from exc
+
+    scipy_popsize = max(2, math.ceil(bounds.population_size / float(n_parameters)))
+    population_count = max(5, scipy_popsize * n_parameters)
+    init_population = feasible_initial_population(
+        model_name=model_name,
+        n_spectra=len(spectra),
+        bounds=bounds,
+        population_count=population_count,
+        afm_priors_by_time_s=afm_priors_by_time_s,
+        thesis_priors_by_time_s=thesis_priors_by_time_s,
+        spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in spectra],
+        afm_priors_mode=afm_priors_mode,
+        afm_sigl_mode=afm_sigl_mode,
+        afm_thickness_prior=afm_thickness_prior,
+        afm_thickness_scale_low=afm_thickness_scale_low,
+        afm_thickness_scale_high=afm_thickness_scale_high,
+        thesis_priors_mode=thesis_priors_mode,
+        hag_window_constraint=hag_window_constraint,
+    )
+    differential_evolution(
+        lambda x: evaluate_unit_vector(tuple(float(value) for value in x)),
+        bounds=[(0.0, 1.0)] * n_parameters,
+        maxiter=bounds.max_generations,
+        popsize=scipy_popsize,
+        seed=bounds.seed,
+        polish=False,
+        # SciPy accepts an array-like initial population, but some stubs type
+        # this parameter only as a string strategy name.
+        init=cast(Any, init_population),
+        updating="immediate",
+        workers=1,
+    )
+
+    if best is None:
+        raise OptimizerError("No valid monotonic global candidates were evaluated")
+    return best
+
+
+def write_gnuplot_script(
+    *,
+    path: Path,
+    image_path: Path,
+    experimental: Spectrum,
+    theoretical_path: Path,
+    fit: SpectrumFit,
+    model: ModelLib,
+    geometry: str,
+    fit_window: FitWindow,
+    plot_window: PlotWindow,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    title = (
+        f"GLOBAL {model.DISPLAY_NAME} {geometry} fit {experimental.basename}: "
+        f"effe={fit.effe:.5g}, d={fit.thickness_nm:.5g} nm, "
+        f"hAg={fit.h_ag_nm:.5g} nm"
+    )
+    if fit.rave_nm is not None and fit.sig_l is not None:
+        title += f", rave={fit.rave_nm:.5g} nm, sigL={fit.sig_l:.5g}"
+    title += f", SSE={fit.sse:.5g}"
+    path.write_text(
+        "\n".join(
+            [
+                "set terminal pngcairo noenhanced size 1400,900",
+                f"set output '{gnuplot_relative(path, image_path)}'",
+                f"set title '{title}'",
+                "set datafile commentschars '#'",
+                "set grid",
+                "set xlabel 'Wavelength (nm)'",
+                "set ylabel 'Transmittance'",
+                f"set xrange [{plot_window.min_nm:g}:{plot_window.max_nm:g}]",
+                "set key outside right",
+                (
+                    f"set arrow from {fit_window.min_nm:g}, graph 0 to "
+                    f"{fit_window.min_nm:g}, graph 1 nohead dashtype 2"
+                ),
+                (
+                    f"set arrow from {fit_window.max_nm:g}, graph 0 to "
+                    f"{fit_window.max_nm:g}, graph 1 nohead dashtype 2"
+                ),
+                f"set label 'fit window' at {fit_window.min_nm:g}, graph 0.95",
+                "plot \\",
+                (
+                    f"  '{gnuplot_relative(path, experimental.path)}' using 1:3 "
+                    "with lines lw 2 title 'experimental', \\"
+                ),
+                (
+                    f"  '{gnuplot_relative(path, theoretical_path)}' using 1:3 "
+                    f"with lines lw 2 title 'global {model.MODEL_NAME} {geometry} fit'"
+                ),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_result_json(
+    *,
+    path: Path,
+    experimental: Spectrum,
+    theoretical_path: Path,
+    gnuplot_path: Path,
+    image_path: Path,
+    fit: SpectrumFit,
+    bounds: ModelBounds,
+    model: ModelLib,
+    geometry: str,
+    plot_window: PlotWindow,
+    afm_prior: AfmParameterPrior | None = None,
+    thesis_prior: AfmParameterPrior | None = None,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+) -> None:
+    grid_min, grid_max, grid_step, full_spectrum_points = experimental.grid
+    mse = fit.sse / fit.objective_points
+    rmse = math.sqrt(mse)
+    best_parameters = {
+        "effe": fit.effe,
+        "thickness_nm": fit.thickness_nm,
+    }
+    if fit.rave_nm is not None and fit.sig_l is not None:
+        best_parameters["rave_nm"] = fit.rave_nm
+        best_parameters["sig_l"] = fit.sig_l
+    best_parameters["h_ag_nm"] = fit.h_ag_nm
+    result = {
+        "model": model.MODEL_NAME,
+        "geometry": geometry,
+        "global_fit": True,
+        "experimental_file": project_relative(experimental.path),
+        "theoretical_file": project_relative(theoretical_path),
+        "gnuplot_script": project_relative(gnuplot_path),
+        "image_file": project_relative(image_path),
+        "best_parameters": best_parameters,
+        "objective_window_nm": {
+            "min": bounds.fit_window.min_nm,
+            "max": bounds.fit_window.max_nm,
+        },
+        "plot_window_nm": {
+            "min": plot_window.min_nm,
+            "max": plot_window.max_nm,
+        },
+        "objective": {
+            "sse": fit.sse,
+            "mse": mse,
+            "rmse": rmse,
+            "finite_points": fit.objective_points,
+            "invalid_points": fit.invalid_points,
+        },
+        "wavelength_grid_nm": {
+            "min": grid_min,
+            "max": grid_max,
+            "step": grid_step,
+        },
+        "full_spectrum_points": full_spectrum_points,
+    }
+    if fit.rave_nm is not None and fit.sig_l is not None:
+        result["distribution_descriptors"] = lognormal_radius_descriptors(
+            rave_nm=fit.rave_nm,
+            sig_l=fit.sig_l,
+            thickness_nm=fit.thickness_nm,
+        )
+    if afm_prior is not None:
+        result["afm_prior_reference"] = {
+            "rave_nm": afm_prior.rave_reference_nm,
+            "sig_l": afm_prior.sig_l_reference,
+            "rave_nm_bounds": {
+                "min": afm_prior.rave_min_nm,
+                "max": afm_prior.rave_max_nm,
+            },
+            "sig_l_bounds": {
+                "min": afm_prior.sig_l_min,
+                "max": afm_prior.sig_l_max,
+            },
+        }
+        if (
+            afm_thickness_prior == "bounded"
+            and afm_prior.thickness_reference_nm is not None
+        ):
+            result["afm_thickness_reference"] = {
+                "thickness_nm": afm_prior.thickness_reference_nm,
+                "scale_low": afm_thickness_scale_low,
+                "scale_high": afm_thickness_scale_high,
+                "bounds": {
+                    "min": afm_thickness_scale_low * afm_prior.thickness_reference_nm,
+                    "max": afm_thickness_scale_high * afm_prior.thickness_reference_nm,
+                },
+            }
+    if thesis_prior is not None:
+        result["thesis_prior_reference"] = thesis_prior_reference_json(thesis_prior)
+    if fit.invalid_points > 0:
+        result["warnings"] = ["non_finite_points_present"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+
+def write_global_summary_json(
+    *,
+    path: Path,
+    global_fit: GlobalFit,
+    bounds: ModelBounds,
+    model: ModelLib,
+    geometry: str,
+    n_parameters: int,
+    afm_prior_config: AfmPriorConfig | None = None,
+    thesis_prior_config: ThesisPriorConfig | None = None,
+    afm_priors_mode: str = DEFAULT_AFM_PRIORS_MODE,
+    afm_sigl_mode: str = DEFAULT_AFM_SIGL_MODE,
+    afm_thickness_prior: str = DEFAULT_AFM_THICKNESS_PRIOR_MODE,
+    afm_thickness_scale_low: float = DEFAULT_AFM_THICKNESS_SCALE_LOW,
+    afm_thickness_scale_high: float = DEFAULT_AFM_THICKNESS_SCALE_HIGH,
+    thesis_priors_mode: str = DEFAULT_THESIS_PRIORS_MODE,
+    hag_linearity_mode: str = DEFAULT_HAG_LINEARITY_MODE,
+    hag_linearity_weight: float = DEFAULT_HAG_LINEARITY_WEIGHT,
+    hag_linearity_tolerance: float = DEFAULT_HAG_LINEARITY_TOLERANCE,
+    hag_window_constraint: HagWindowConstraint = HagWindowConstraint(),
+    excluded_times_s: Sequence[int] = (),
+) -> None:
+    result = {
+        "model": model.MODEL_NAME,
+        "geometry": geometry,
+        "global_fit": True,
+        "constraint": {
+            "name": "monotonic_silver_volume_per_area",
+            "quantity": "h_ag_nm = effe * thickness_nm",
+            "enforced": True,
+        },
+        "objective": {
+            "total_sse": global_fit.total_sse,
+            "regularized_objective": global_fit.objective_value,
+            "total_finite_points": global_fit.total_finite_points,
+            "n_parameters": n_parameters,
+        },
+        "optimizer": {
+            "method": "differential_evolution",
+            "seed": bounds.seed,
+            "max_generations": bounds.max_generations,
+            "population_size": bounds.population_size,
+            "scipy_popsize": max(2, math.ceil(bounds.population_size / float(n_parameters))),
+            "bounds": asdict(bounds),
+        },
+        "spectra": [],
+        "excluded_times_s": list(excluded_times_s),
+        "hag_linearity_mode": hag_linearity_mode,
+        "hag_linearity_weight": hag_linearity_weight,
+        "hag_linearity_tolerance": hag_linearity_tolerance,
+        "hag_window_constraint": {
+            "mode": hag_window_constraint.mode,
+            "quantity": "h_ag_nm = effe * thickness_nm",
+            "min_nm": hag_window_constraint.min_nm,
+            "max_nm": hag_window_constraint.max_nm,
+            "enforced": hag_window_constraint.enabled,
+        },
+    }
+    if global_fit.hag_linear_fit is not None:
+        result["hag_linear_fit"] = {
+            "slope": global_fit.hag_linear_fit.slope,
+            "intercept": global_fit.hag_linear_fit.intercept,
+            "r2": global_fit.hag_linear_fit.r2,
+            "max_relative_deviation": global_fit.hag_linear_fit.max_relative_deviation,
+            "penalty": global_fit.hag_linear_fit.penalty,
+        }
+    if afm_prior_config is not None:
+        result["afm_priors"] = {
+            "enabled": True,
+            "mode": afm_priors_mode,
+            "afm_sigl_mode": afm_sigl_mode,
+            "path": project_relative(afm_prior_config.path),
+            "source": afm_prior_config.source,
+            "strategy": afm_prior_config.strategy,
+        }
+        result["afm_sigl_mode"] = afm_sigl_mode
+    if thesis_prior_config is not None:
+        result["thesis_priors"] = {
+            "enabled": True,
+            "path": project_relative(thesis_prior_config.path),
+            "mode": thesis_priors_mode,
+            "strategy": thesis_prior_config.strategy.get("name"),
+            "source": thesis_prior_config.source.get("input_file"),
+            "source_metadata": thesis_prior_config.source,
+            "strategy_metadata": thesis_prior_config.strategy,
+        }
+    if afm_prior_config is not None and afm_thickness_prior == "bounded":
+        result["afm_thickness_prior"] = {
+            "mode": "bounded",
+            "source_field": "equivalent_thickness_nm",
+            "scale_low": afm_thickness_scale_low,
+            "scale_high": afm_thickness_scale_high,
+        }
+    for fit in global_fit.spectra:
+        spectrum_result = {
+            "time_s": fit.time_s,
+            "spectrum": fit.experimental.basename,
+            "sse": fit.sse,
+            "effe": fit.effe,
+            "thickness_nm": fit.thickness_nm,
+        }
+        if fit.rave_nm is not None and fit.sig_l is not None:
+            spectrum_result["rave_nm"] = fit.rave_nm
+            spectrum_result["sig_l"] = fit.sig_l
+        if afm_prior_config is not None:
+            prior = afm_prior_config.priors_by_time_s[fit.time_s]
+            spectrum_result["afm_prior_reference"] = {
+                "rave_nm": prior.rave_reference_nm,
+                "sig_l": prior.sig_l_reference,
+                "rave_nm_bounds": {
+                    "min": prior.rave_min_nm,
+                    "max": prior.rave_max_nm,
+                },
+                "sig_l_bounds": {
+                    "min": prior.sig_l_min,
+                    "max": prior.sig_l_max,
+                },
+            }
+            if (
+                afm_thickness_prior == "bounded"
+                and prior.thickness_reference_nm is not None
+            ):
+                spectrum_result["afm_thickness_reference"] = {
+                    "thickness_nm": prior.thickness_reference_nm,
+                    "scale_low": afm_thickness_scale_low,
+                    "scale_high": afm_thickness_scale_high,
+                    "bounds": {
+                        "min": afm_thickness_scale_low * prior.thickness_reference_nm,
+                        "max": afm_thickness_scale_high * prior.thickness_reference_nm,
+                    },
+                }
+        if thesis_prior_config is not None:
+            prior = thesis_prior_config.priors_by_time_s[fit.time_s]
+            spectrum_result["thesis_prior_reference"] = thesis_prior_reference_json(prior)
+        spectrum_result["h_ag_nm"] = fit.h_ag_nm
+        result["spectra"].append(spectrum_result)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+
+def run_gnuplot(script_path: Path) -> None:
+    if shutil.which("gnuplot") is None:
+        raise OptimizerError("gnuplot is required but was not found on PATH")
+    subprocess.run(["gnuplot", script_path.name], check=True, cwd=script_path.parent)
+
+
+def run_global_effective_medium(args: argparse.Namespace, selection: ModelSelection) -> int:
+    afm_prior_config: AfmPriorConfig | None = None
+    thesis_prior_config: ThesisPriorConfig | None = None
+    afm_priors_mode = str(args.afm_priors_mode)
+    afm_sigl_mode = str(args.afm_sigl_mode)
+    afm_thickness_prior = str(args.afm_thickness_prior)
+    afm_thickness_scale_low = float(args.afm_thickness_scale_low)
+    afm_thickness_scale_high = float(args.afm_thickness_scale_high)
+    thesis_priors_mode = str(args.thesis_priors_mode)
+    hag_linearity_mode = str(args.hag_linearity_mode)
+    hag_linearity_weight = float(args.hag_linearity_weight)
+    hag_linearity_tolerance = float(args.hag_linearity_tolerance)
+    hag_window_mode = str(args.hag_window_mode)
+    hag_window_min_nm = args.hag_window_min_nm
+    hag_window_max_nm = args.hag_window_max_nm
+    if afm_priors_mode not in AFM_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM priors mode: {afm_priors_mode}")
+    if afm_sigl_mode not in AFM_SIGL_MODES:
+        raise OptimizerError(f"Invalid AFM sigL mode: {afm_sigl_mode}")
+    if afm_thickness_prior not in AFM_THICKNESS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid AFM thickness prior mode: {afm_thickness_prior}")
+    if thesis_priors_mode not in THESIS_PRIOR_MODES:
+        raise OptimizerError(f"Invalid thesis priors mode: {thesis_priors_mode}")
+    if afm_thickness_scale_low <= 0.0:
+        raise OptimizerError("--afm-thickness-scale-low must be positive")
+    if afm_thickness_scale_high <= afm_thickness_scale_low:
+        raise OptimizerError("--afm-thickness-scale-high must be greater than --afm-thickness-scale-low")
+    if hag_linearity_mode not in HAG_LINEARITY_MODES:
+        raise OptimizerError(f"Invalid hAg linearity mode: {hag_linearity_mode}")
+    if hag_linearity_weight < 0.0:
+        raise OptimizerError("--hag-linearity-weight must be non-negative")
+    if hag_linearity_tolerance <= 0.0:
+        raise OptimizerError("--hag-linearity-tolerance must be positive")
+    if hag_window_mode not in HAG_WINDOW_MODES:
+        raise OptimizerError(f"Invalid hAg window mode: {hag_window_mode}")
+    if hag_window_mode == "bounded":
+        if hag_window_min_nm is None or hag_window_max_nm is None:
+            raise OptimizerError(
+                "--hag-window-mode bounded requires --hag-window-min-nm and --hag-window-max-nm"
+            )
+        hag_window_min_nm = float(hag_window_min_nm)
+        hag_window_max_nm = float(hag_window_max_nm)
+        if hag_window_min_nm < 0.0:
+            raise OptimizerError("--hag-window-min-nm must be non-negative")
+        if hag_window_max_nm <= hag_window_min_nm:
+            raise OptimizerError("--hag-window-max-nm must be greater than --hag-window-min-nm")
+    else:
+        if hag_window_min_nm is not None or hag_window_max_nm is not None:
+            raise OptimizerError(
+                "--hag-window-min-nm/--hag-window-max-nm require --hag-window-mode bounded"
+            )
+    hag_window_constraint = HagWindowConstraint(
+        mode=hag_window_mode,
+        min_nm=float(hag_window_min_nm) if hag_window_min_nm is not None else None,
+        max_nm=float(hag_window_max_nm) if hag_window_max_nm is not None else None,
+    )
+    if afm_priors_mode == "fixed" and args.afm_priors_json is None:
+        raise OptimizerError("--afm-priors-mode fixed requires --afm-priors-json")
+    if afm_priors_mode == "bounded" and afm_sigl_mode == "fixed" and args.afm_priors_json is None:
+        raise OptimizerError("--afm-sigl-mode fixed requires --afm-priors-json")
+    if args.afm_priors_json is not None and args.thesis_priors_json is not None:
+        raise OptimizerError("--afm-priors-json and --thesis-priors-json cannot be combined")
+    if args.afm_priors_json is not None:
+        if selection.model not in MMGM_SINGLE_MODELS:
+            raise OptimizerError(
+                "--afm-priors-json is supported only for "
+                "mmgm_spheres_single and mmgm_holes_single"
+            )
+        afm_prior_config = read_afm_prior_config(args.afm_priors_json)
+    if args.thesis_priors_json is not None:
+        if selection.model not in MMGM_SINGLE_MODELS:
+            raise OptimizerError(
+                "--thesis-priors-json is supported only for "
+                "mmgm_spheres_single and mmgm_holes_single"
+            )
+        thesis_prior_config = read_thesis_prior_config(args.thesis_priors_json)
+        strategy_name = thesis_prior_config.strategy.get("name")
+        if thesis_priors_mode == "fixed" and strategy_name != "fixed":
+            raise OptimizerError(
+                "--thesis-priors-mode fixed requires a fixed thesis prior JSON"
+            )
+        if thesis_priors_mode == "bounded" and strategy_name == "fixed":
+            raise OptimizerError(
+                "--thesis-priors-mode bounded requires a bounded thesis prior JSON"
+            )
+
+    if not args.transmittance_exe.exists():
+        raise OptimizerError(
+            f"Missing forward executable: {args.transmittance_exe}. Run `make bin/transmittance`."
+        )
+
+    selected_lib = model_lib(selection)
+    template = load_template(args.template_json)
+    bounds = read_bounds(args.bounds_json, selection.model)
+    if args.seed is not None:
+        bounds = replace(bounds, seed=args.seed)
+    if args.max_generations is not None:
+        bounds = replace(bounds, max_generations=args.max_generations)
+    if args.population_size is not None:
+        bounds = replace(bounds, population_size=args.population_size)
+    if bounds.population_size <= 0:
+        raise OptimizerError("--population-size must be positive")
+    if bounds.max_generations < 0:
+        raise OptimizerError("--max-generations must be non-negative")
+
+    exclude_times = parse_exclude_times(args.exclude_times)
+    spectra_paths = discover_spectra(args.spectra_dir)
+    timed_spectra = [
+        TimedSpectrum(
+            time_s=deposition_time_seconds(path),
+            spectrum=read_experimental_spectrum(path),
+        )
+        for path in spectra_paths
+    ]
+    for timed_spectrum in timed_spectra:
+        validate_uniform_grid(timed_spectrum.spectrum)
+        if not covers_fit_window(timed_spectrum.spectrum, bounds.fit_window):
+            raise OptimizerError(
+                f"{timed_spectrum.spectrum.path} grid {timed_spectrum.spectrum.grid} "
+                f"does not cover the objective fit window "
+                f"{bounds.fit_window.min_nm:g}-{bounds.fit_window.max_nm:g} nm"
+            )
+    if not timed_spectra:
+        raise OptimizerError(f"No spectra found in {args.spectra_dir}")
+    if exclude_times:
+        timed_spectra = [
+            timed_spectrum
+            for timed_spectrum in timed_spectra
+            if timed_spectrum.time_s not in exclude_times
+        ]
+    if not timed_spectra:
+        raise OptimizerError("No spectra remain after applying --exclude-times")
+    if afm_prior_config is not None:
+        require_afm_prior_times(
+            afm_priors_by_time_s=afm_prior_config.priors_by_time_s,
+            spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in timed_spectra],
+        )
+    if thesis_prior_config is not None:
+        require_afm_prior_times(
+            afm_priors_by_time_s=thesis_prior_config.priors_by_time_s,
+            spectrum_times_s=[timed_spectrum.time_s for timed_spectrum in timed_spectra],
+        )
+
+    spectra_only = [timed_spectrum.spectrum for timed_spectrum in timed_spectra]
+    plot_window = common_plot_window(spectra_only)
+    paths = output_paths(args, selection, selected_lib)
+    paths.output_dir.mkdir(parents=True, exist_ok=True)
+    paths.gnuplot_dir.mkdir(parents=True, exist_ok=True)
+    paths.image_dir.mkdir(parents=True, exist_ok=True)
+    paths.tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    n_parameters = (
+        parameter_count_for_model(
+            selection.model,
+            afm_priors_mode=afm_priors_mode,
+            afm_sigl_mode=afm_sigl_mode,
+            afm_priors_enabled=afm_prior_config is not None,
+            thesis_priors_mode=thesis_priors_mode,
+            thesis_priors_enabled=thesis_prior_config is not None,
+        )
+        * len(timed_spectra)
+    )
+    optimizer_label = (
+        f"DE seed={bounds.seed}, pop={bounds.population_size}, "
+        f"gen={bounds.max_generations}"
+        if selection.model in {"mmgm_spheres_single", "mmgm_holes_single"}
+        else (
+            "differential_evolution, "
+            f"seed={bounds.seed}, population_size={bounds.population_size}, "
+            f"max_generations={bounds.max_generations}"
+        )
+    )
+    print(
+        f"{selected_lib.DISPLAY_NAME} {selection.geometry} global fit:\n"
+        f"  spectra: {len(timed_spectra)}\n"
+        f"  parameters: {n_parameters}\n"
+        f"  excluded times: {', '.join(str(time_s) for time_s in sorted(exclude_times)) if exclude_times else 'none'}\n"
+        "  constraint: hAg monotonic increasing\n"
+        f"  hAg linearity mode: {hag_linearity_mode}\n"
+        f"  hAg window mode: {hag_window_constraint.mode}"
+        + (
+            f" [{hag_window_constraint.min_nm:g}, {hag_window_constraint.max_nm:g}] nm\n"
+            if hag_window_constraint.enabled
+            else "\n"
+        )
+        + f"  optimizer: {optimizer_label}",
+        flush=True,
+    )
+    if afm_prior_config is not None:
+        print(
+            f"  AFM priors: {afm_prior_config.path}\n"
+            f"  AFM priors mode: {afm_priors_mode}\n"
+            f"  AFM sigL mode: {afm_sigl_mode}\n"
+            f"  AFM thickness prior: {afm_thickness_prior}\n"
+            f"  AFM thickness scales: {afm_thickness_scale_low:g}, {afm_thickness_scale_high:g}\n"
+            "  AFM prior distribution: "
+            f"{afm_prior_config.source.get('distribution')}\n"
+            "  AFM radius proxy: "
+            f"{afm_prior_config.source.get('radius_proxy_name')}",
+            flush=True,
+        )
+    if thesis_prior_config is not None:
+        print(
+            f"  thesis priors: {thesis_prior_config.path}\n"
+            f"  thesis priors mode: {thesis_priors_mode}\n"
+            f"  thesis strategy: {thesis_prior_config.strategy.get('name')}\n"
+            f"  thesis source: {thesis_prior_config.source.get('input_file')}",
+            flush=True,
+        )
+
+    global_fit = optimize_global(
+        transmittance_exe=args.transmittance_exe,
+        template=template,
+        bounds=bounds,
+        model=selected_lib,
+        model_name=selection.model,
+        geometry=selection.geometry,
+        spectra=timed_spectra,
+        paths=paths,
+        afm_priors_by_time_s=(
+            afm_prior_config.priors_by_time_s if afm_prior_config is not None else None
+        ),
+        thesis_priors_by_time_s=(
+            thesis_prior_config.priors_by_time_s if thesis_prior_config is not None else None
+        ),
+        afm_priors_mode=afm_priors_mode,
+        afm_sigl_mode=afm_sigl_mode,
+        afm_thickness_prior=afm_thickness_prior,
+        afm_thickness_scale_low=afm_thickness_scale_low,
+        afm_thickness_scale_high=afm_thickness_scale_high,
+        thesis_priors_mode=thesis_priors_mode,
+        hag_linearity_mode=hag_linearity_mode,
+        hag_linearity_weight=hag_linearity_weight,
+        hag_linearity_tolerance=hag_linearity_tolerance,
+        hag_window_constraint=hag_window_constraint,
+    )
+
+    for fit in global_fit.spectra:
+        stem = output_stem(fit.experimental.basename)
+        result_path = paths.output_dir / f"{stem}.json"
+        gnuplot_path = paths.gnuplot_dir / f"{stem}.gp"
+        image_path = paths.image_dir / f"{stem}.png"
+        write_result_json(
+            path=result_path,
+            experimental=fit.experimental,
+            theoretical_path=fit.theoretical_path,
+            gnuplot_path=gnuplot_path,
+            image_path=image_path,
+            fit=fit,
+            bounds=bounds,
+            model=selected_lib,
+            geometry=selection.geometry,
+            plot_window=plot_window,
+            afm_prior=(
+                afm_prior_config.priors_by_time_s[fit.time_s]
+                if afm_prior_config is not None
+                else None
+            ),
+            thesis_prior=(
+                thesis_prior_config.priors_by_time_s[fit.time_s]
+                if thesis_prior_config is not None
+                else None
+            ),
+            afm_thickness_prior=afm_thickness_prior,
+            afm_thickness_scale_low=afm_thickness_scale_low,
+            afm_thickness_scale_high=afm_thickness_scale_high,
+        )
+        write_gnuplot_script(
+            path=gnuplot_path,
+            image_path=image_path,
+            experimental=fit.experimental,
+            theoretical_path=fit.theoretical_path,
+            fit=fit,
+            model=selected_lib,
+            geometry=selection.geometry,
+            fit_window=bounds.fit_window,
+            plot_window=plot_window,
+        )
+        run_gnuplot(gnuplot_path)
+
+    write_global_summary_json(
+        path=paths.output_dir / "global_result.json",
+        global_fit=global_fit,
+        bounds=bounds,
+        model=selected_lib,
+        geometry=selection.geometry,
+        n_parameters=n_parameters,
+        afm_prior_config=afm_prior_config,
+        thesis_prior_config=thesis_prior_config,
+        afm_priors_mode=afm_priors_mode,
+        afm_sigl_mode=afm_sigl_mode,
+        afm_thickness_prior=afm_thickness_prior,
+        afm_thickness_scale_low=afm_thickness_scale_low,
+        afm_thickness_scale_high=afm_thickness_scale_high,
+        thesis_priors_mode=thesis_priors_mode,
+        hag_linearity_mode=hag_linearity_mode,
+        hag_linearity_weight=hag_linearity_weight,
+        hag_linearity_tolerance=hag_linearity_tolerance,
+        hag_window_constraint=hag_window_constraint,
+        excluded_times_s=sorted(exclude_times),
+    )
+    print(f"Done. Wrote {paths.output_dir / 'global_result.json'}")
+    return 0
+
+
+def main() -> int:
+    args = parse_args()
+    return run_global_effective_medium(args, selected_model(args))
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (
+        OptimizerError,
+        mg_lib.MgModelError,
+        bruggeman_lib.BruggemanModelError,
+        mmgm_single_lib.MmgmSingleModelError,
+        subprocess.CalledProcessError,
+    ) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
